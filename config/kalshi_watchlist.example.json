@@ -26,7 +26,7 @@
   "ticker_enabled": true,
   "display_refresh_seconds": 30,
   "setup_server": {
-    "enabled": false,
+    "enabled": true,
     "host": "127.0.0.1",
     "port": 8788,
     "public_base_url": "",

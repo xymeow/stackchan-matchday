@@ -527,6 +527,11 @@ export function refreshSetupQr(robot) {
 function createSetupQrEffect(url) {
   const shortUrl = url.replace(/^https?:\/\//, '')
   const title = SETUP_QR_TITLE[state.matchSetup.language] ?? SETUP_QR_TITLE.zh
+  const qrTexture = new Texture('setup-qr.png')
+  const qrWidth = qrTexture.width
+  const qrHeight = qrTexture.height
+  const qrLeft = Math.round((320 - qrWidth) / 2)
+  const qrTop = 35 + Math.max(0, Math.round((168 - qrHeight) / 2))
   return new Container(null, {
     name: 'MatchSetupQr',
     left: 0,
@@ -545,16 +550,16 @@ function createSetupQrEffect(url) {
         style: new Style({ font: FONT, color: '#17202a', horizontal: 'center', vertical: 'middle' }),
       }),
       new Content(null, {
-        left: 76,
-        right: 76,
-        top: 35,
-        height: 168,
+        left: qrLeft,
+        top: qrTop,
+        width: qrWidth,
+        height: qrHeight,
         skin: new Skin({
-          texture: { path: 'setup-qr.png' },
+          texture: qrTexture,
           x: 0,
           y: 0,
-          width: 168,
-          height: 168,
+          width: qrWidth,
+          height: qrHeight,
         }),
       }),
       new Label(null, {

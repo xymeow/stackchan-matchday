@@ -9,9 +9,8 @@ fresh checkout.
 Usage:
     python3 host/prepare_cjk_font.py /path/to/stack-chan [--ttf /path/to/font.ttf]
 
-The default TTF is macOS Arial Unicode, which reproduces the original
-Stack-chan Kalshi companion look. Any CJK-capable TTF works, for example
-Noto Sans SC.
+The default TTF is macOS Arial Unicode, which provides a compact CJK-capable
+look for Matchday. Any CJK-capable TTF works, for example Noto Sans SC.
 """
 
 from __future__ import annotations

@@ -1,148 +1,255 @@
 # Stack-chan Matchday
 
-A lightweight [Stack-chan](https://github.com/stack-chan/stack-chan) mod plus a
-LAN watcher that turn the robot into a World Cup co-watching companion: it
-keeps both teams' Kalshi advance-market probabilities on screen, announces
-goals and key ESPN live-commentary events with speech, balloons, lights, and a
-safe little head dance, and lets you pick the next match from your phone.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-> **Product boundary.** This is a read-only match companion. It does not
-> trade, does not read any Kalshi account, and does not give betting advice.
-> `position_team` is a manually entered preference used only to choose the
-> post-match reaction — the system never sees a real position. ESPN and Kalshi
-> endpoints used here are public but unofficial; they can lag behind the TV
-> feed and may change without notice. Poll them politely.
+Stack-chan Matchday is a lightweight [Stack-chan](https://github.com/stack-chan/stack-chan)
+mod and Python LAN watcher that together turn a CoreS3 robot into a World Cup
+co-watching companion. It shows both teams' Kalshi advance-market
+probabilities, follows ESPN scores and live commentary, reacts with speech,
+balloons, lights, and safe head movements, and lets you choose the next match
+from a phone.
 
-```text
-Kalshi public REST ------+
-                         +--> Python watcher (Mac/LAN host) --HTTP--> Stack-chan mod
-ESPN scoreboard/summary -+          |                                   |
-                                    |                                   +--> probability bar + flags
-                                    +--> fixture discovery              +--> balloons / tones / TTS
-                                    +--> priority alert queue           +--> goal & result celebrations
-                                                                        +--> /setup phone page
-```
+> [!IMPORTANT]
+> This is a read-only match companion. It does not trade, access a Kalshi
+> account, or provide betting advice. `position_team` is a manually entered
+> preference used only to choose the post-match reaction. Kalshi data comes
+> from its public REST API; ESPN data comes from publicly reachable,
+> undocumented endpoints that may change or lag behind the broadcast.
+
+## Features
+
+- A persistent two-team probability bar with flags and a bottom market ticker.
+- Goal, card, substitution, close-miss, match-state, and final-result reactions.
+- A phone setup page hosted by Stack-chan, with live Chinese/English switching.
+- Double-tap head-touch and Power-button shortcuts for the setup QR code.
+- Fixture discovery, adaptive polling, hot configuration reload, and quiet hours.
+- Optional LAN TTS; visual feedback and tone patterns still work without it.
+- Standalone mode for following up to four active markets without a fixture.
+
+## System design
+
+![Stack-chan Matchday system design](docs/images/system-design.png)
+
+Kalshi and ESPN are read-only inputs to the Python watcher. The watcher sends
+fixture options, display commands, and acknowledgements to the Matchday mod.
+The phone talks to Stack-chan's own `/setup` page; the device stores a pending
+selection, and the watcher validates it, atomically updates the local JSON
+configuration, hot-reloads, and acknowledges the device. For speech,
+Stack-chan requests `/say?text=...` from the optional LAN TTS server and
+receives a 24 kHz mono 16-bit PCM WAV response.
+
+The phone, watcher host, TTS server, and Stack-chan must be on the same trusted
+LAN. The optional watcher-hosted `:8788/setup` page is a local admin fallback,
+not the primary QR flow.
 
 ## Repository layout
 
-- `mod/` — the device mod (seven JS modules + flag/QR assets). Builds to
-  ~236KB, fits a standard 256KB `xs` partition; no host source patches
-  required.
-- `host/` — two reviewable git patches for the host build (mod partition for
-  CoreS3 — required; optional `StackChanCN-24` CJK font) and the font prep
-  script.
-- `tools/` — the Kalshi/ESPN watcher, phone-setup service, LAN TTS server,
-  match replay, shared i18n helpers, CLI control helper, flag-asset
-  generator, and tests (stdlib only, no pip installs).
-- `config/` — example watchlist and flag-pack definitions. Copy
-  `kalshi_watchlist.example.json` to `kalshi_watchlist.json` (gitignored) and
-  edit.
+- `mod/` — the device mod, split into small JS modules plus flag and QR assets.
+- `host/` — a required CoreS3 partition patch, an optional CJK-font patch, and
+  the font preparation helper. These are build/resource changes; the upstream
+  runtime JS/C source remains unchanged.
+- `tools/` — the watcher, local setup service, macOS TTS server, replay tool,
+  serial helper, asset generator, and tests. The default HTTP workflow uses the
+  Python standard library; serial transport additionally requires `pyserial`.
+- `config/` — the example watcher configuration and flag-pack definition.
 
 ## Requirements
 
-- M5Stack CoreS3-based Stack-chan (16MB flash)
-- [Moddable SDK](https://github.com/Moddable-OpenSource/moddable) + ESP-IDF
-  (easiest via [xs-dev](https://github.com/HipsterBrown/xs-dev)), Node.js
-- A checkout of `stack-chan/stack-chan` (or a fork), branch `dev/v1.0`
-- Python 3.10+ on the machine that runs the watcher (macOS `say` powers the
-  default TTS server; any WAV-over-HTTP TTS works)
+- A CoreS3-based Stack-chan with 16 MB flash and a USB data cable.
+- Git, Python 3.10+, Node.js 20+ (Node.js 22 is the tested upstream version),
+  npm, and `xz` on the build computer.
+- Moddable SDK and ESP-IDF. The upstream `xs-dev` setup command below installs
+  and checks them.
+- A phone and watcher computer on the same trusted LAN as Stack-chan.
+- `qrencode` only when generating the device-specific setup QR.
+- macOS only for the included `say`-based TTS server. Other systems can run the
+  watcher without speech or provide a compatible `/say` WAV service.
+
+The commands below are written for macOS/Linux shells. Set two absolute paths
+once and keep using them throughout the installation:
+
+```sh
+mkdir -p "$HOME/src"
+export MATCHDAY_DIR="$HOME/src/stackchan-matchday"
+export STACKCHAN_DIR="$HOME/src/stack-chan"
+```
 
 ## Install
 
-**1. Host firmware (once).** See [host/README.md](host/README.md): apply the
-partition patch (and optionally the CJK font patch), then build and deploy the
-stock host. Devices flashed with the earlier `stackchan-kalshi` tooling
-already have this layout and font — skip straight to step 2.
-
-**2. Mod.** From the stack-chan checkout's `firmware/` directory:
+### 1. Clone and prepare the upstream build environment
 
 ```sh
+git clone https://github.com/xymeow/stackchan-matchday.git "$MATCHDAY_DIR"
+git clone https://github.com/stack-chan/stack-chan.git "$STACKCHAN_DIR"
+
+cd "$STACKCHAN_DIR"
+git switch --detach ded5ca94ef50411aec213b85a23d1afe72d4c29e
+
+cd "$STACKCHAN_DIR/firmware"
+npm ci
+npm run setup -- --device=esp32
+npm run doctor
+```
+
+The pinned commit is the tested base for the patches in this repository. Do
+not build until `npm run doctor` lists `esp32` as a supported target. See the
+upstream [getting-started guide](https://github.com/stack-chan/stack-chan/blob/dev/v1.0/firmware/docs/getting-started.md)
+if `xs-dev` reports a platform-specific prerequisite.
+
+### 2. Patch, build, and flash the host once
+
+Apply the partition patch on every new CoreS3 host checkout:
+
+```sh
+cd "$STACKCHAN_DIR"
+git am "$MATCHDAY_DIR/host/patches/0001-Add-xs-mod-partition-for-M5StackChan-CoreS3.patch"
+```
+
+For Chinese labels and balloons, also apply the font patch and prepare a
+CJK-capable TTF. Pure-English installations may skip these two commands and
+set the watcher language to `en`:
+
+```sh
+git am "$MATCHDAY_DIR/host/patches/0002-Add-optional-StackChanCN-24-GB2312-font-resource.patch"
+python3 "$MATCHDAY_DIR/host/prepare_cjk_font.py" "$STACKCHAN_DIR"
+```
+
+Build and flash the host:
+
+```sh
+cd "$STACKCHAN_DIR/firmware"
+export PATH="$PWD/node_modules/.bin:$PATH"
+mcconfig -d -m -p esp32:./platforms/m5stackchan_cores3 -t deploy \
+  "$PWD/stackchan/manifest_m5stackchan_cores3.json"
+```
+
+See [host/README.md](host/README.md) for font selection and patch details.
+
+### 3. Generate the QR, then build and install the mod
+
+The QR image is a static asset compiled into the mod; it is not generated at
+runtime. Use a stable DHCP reservation, IP address, or resolvable mDNS name,
+and generate the QR before installing the mod. The UI reads the PNG's natural
+dimensions; keep both edges at or below 168 px so the title and URL still fit:
+
+```sh
+export STACKCHAN_HOST=stackchan.local
+qrencode -s 4 -m 1 -o "$MATCHDAY_DIR/mod/assets/setup/setup-qr.png" \
+  "http://$STACKCHAN_HOST/setup"
+file "$MATCHDAY_DIR/mod/assets/setup/setup-qr.png"
+```
+
+If `file` reports an edge larger than 168 px, regenerate with `-s 3`. Then
+build and install the mod:
+
+```sh
+cd "$STACKCHAN_DIR/firmware"
 npm run mod --target=esp32:./platforms/m5stackchan_cores3 -- -f rgb565be \
-  /path/to/stackchan-matchday/mod/manifest.json
+  "$MATCHDAY_DIR/mod/manifest.json"
 ```
 
-`-f rgb565be` is required on CoreS3; without it the flag colors byte-swap.
-
-**3. Point speech at your TTS server** (optional but recommended):
+`-f rgb565be` is required on CoreS3; without it, flag colors are byte-swapped.
+Verify the mod from the watcher computer:
 
 ```sh
-launchctl submit -l local.stackchan.tts -- /usr/bin/python3 "$PWD/tools/stackchan_tts_server.py" --host 0.0.0.0 --port 8787
-curl -X POST --data-binary 'tts host <your-lan-ip>:8787' http://<stackchan-ip>/api/command
+curl "http://$STACKCHAN_HOST/health"
+curl "http://$STACKCHAN_HOST/api/status"
 ```
 
-The mod streams speech through the host's stock `tts-remote` module and reads
-the host's native `tts` preference domain, so changing the IP later is one
-command — no rebuild, no reboot. Without a TTS server everything still works;
-speech falls back to short tone patterns.
-
-**4. Watcher.**
+### 4. Configure and start the watcher
 
 ```sh
-cp config/kalshi_watchlist.example.json config/kalshi_watchlist.json
-python3 tools/stackchan_kalshi_watch.py --config config/kalshi_watchlist.json --once --dry-run
-python3 tools/stackchan_kalshi_watch.py --config config/kalshi_watchlist.json --watch
+cp "$MATCHDAY_DIR/config/kalshi_watchlist.example.json" \
+  "$MATCHDAY_DIR/config/kalshi_watchlist.json"
 ```
 
-With `setup_server.enabled: true`, open `http://<stackchan-ip>/setup` on a
-phone in the same LAN to pick the next match, your team, and an optional
-pregame position; the watcher validates and hot-reloads without restarting.
+Edit the copied file and check these values:
 
-**Proactive prompts.** Once per local day after `setup_server.daily_prompt_hour`
-(default 10, `-1` disables, quiet hours respected), the robot speaks up on its
-own: if fixtures kick off today and none of them is configured, it asks you to
-scan the QR and pick one; if the lookahead window has no fixtures at all, it
-asks whether you would like to watch some other Kalshi market instead. The
-usual pregame prompt (`prompt_minutes_before` ahead of an unconfigured
-kickoff) still fires independently.
+- `stackchan_host` matches `$STACKCHAN_HOST` or the device's LAN IP.
+- `stackchan_transport` is `http`; the phone setup relay does not work over
+  serial transport.
+- `setup_server.enabled` is `true`.
+- Port `8788` is free. Its default `127.0.0.1` binding keeps the optional local
+  admin page on the watcher computer only.
 
-**Standalone Kalshi markets.** The setup page can watch any Kalshi event
-without a fixture: paste an event link or ticker under *Watch a Kalshi market
-directly* and the watcher configures up to its four most-traded markets into
-the bottom text ticker with price alerts (probability bar and ESPN commentary
-turn off, since arbitrary markets have neither team flags nor a fixture).
-Selecting a match later switches everything back.
-
-**Waking the setup QR on the device.** Double-tap the three-zone touch bar on
-top of the head to show the setup QR; while it is visible, tap the top bar
-once to hide it. Briefly pressing the physical Power button does the same on
-hosts built from `dev/v1.0` commit `ded5ca9` (power-button support) or later.
-The mod reads the Si12T top bar's raw 0–3 intensity samples itself with
-hysteresis (press ≥ 2, release ≤ 1) instead of the host gesture recognizer,
-so capacitive baseline drift on a warm device neither fires false taps nor
-wedges the detector. `GET /api/status` → `setup.trigger.touch` exposes the
-live intensity/position/tap counters for tuning the thresholds in
-`mod/mod.js` without guesswork.
-
-`mod/assets/setup/setup-qr.png` encodes the device setup URL and is
-device-specific; regenerate it for your own address with e.g.
-`qrencode -s 4 -m 1 -o mod/assets/setup/setup-qr.png "http://<stackchan-ip>/setup"`
-and rebuild the mod.
-
-## Language
-
-Set the top-level `language` to `"zh"` or `"en"`. This selects one complete
-output language for watcher-generated speech and balloons; Chinese remains the
-default for existing configs.
-
-The phone setup page has a `中文 / English` selector that switches the whole
-page — section titles, match names, status lines — and the on-device QR
-overlay **immediately** (`POST /api/match-setup/language`), and is persisted
-across device reboots. A language picked on the page wins over whatever
-language the watcher pushes with its fixture options; watcher speech and
-balloons follow the selection once a match is applied with **Start watching**
-(the watcher's poll endpoint `GET /api/match-setup/pending` also reports the
-device language for future hot-switching).
-
-You can also preview another language without editing the config file:
+Validate the JSON, then keep the watcher running:
 
 ```sh
-python3 tools/stackchan_kalshi_watch.py --config config/kalshi_watchlist.json \
-  --language en --once --dry-run
-python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json \
-  --language en
+python3 -m json.tool "$MATCHDAY_DIR/config/kalshi_watchlist.json"
+python3 "$MATCHDAY_DIR/tools/stackchan_kalshi_watch.py" \
+  --config "$MATCHDAY_DIR/config/kalshi_watchlist.json" --watch
 ```
 
-User-facing config values accept either a legacy string or a localized object:
+The example `KXEXAMPLE-...` tickers are intentional placeholders. Until you
+select a live match from the phone or replace them with real open tickers, the
+watcher may report them as missing. `--dry-run` only suppresses device writes;
+it still queries the public APIs and is not an offline installation check.
+
+### 5. Optional: enable LAN speech
+
+In a second terminal on macOS, re-export the repository path and start the
+included server in the foreground so errors remain visible:
+
+```sh
+export MATCHDAY_DIR="$HOME/src/stackchan-matchday"
+python3 "$MATCHDAY_DIR/tools/stackchan_tts_server.py" --host 0.0.0.0 --port 8787
+```
+
+Leave that terminal running. In another terminal, verify it and point the
+device at the watcher's LAN address, not `127.0.0.1`:
+
+```sh
+curl "http://127.0.0.1:8787/health"
+export STACKCHAN_HOST=stackchan.local
+export WATCHER_HOST=192.168.1.20
+curl --request POST --data-binary "tts host $WATCHER_HOST:8787" \
+  "http://$STACKCHAN_HOST/api/command"
+curl --request POST --data-binary "say Matchday ready" \
+  "http://$STACKCHAN_HOST/api/command"
+```
+
+Allow inbound TCP `8787` through the computer firewall. Use `say -v '?'` to
+list installed macOS voices; override defaults with
+`STACKCHAN_TTS_ZH_VOICE`, `STACKCHAN_TTS_EN_VOICE`, and
+`STACKCHAN_TTS_RATE`. Without a reachable TTS server, the mod automatically
+falls back to short tone patterns.
+
+## How to use
+
+1. **Start the watcher.** Keep the watcher computer awake and the `--watch`
+   process running. The phone, computer, and Stack-chan must share a trusted
+   LAN.
+2. **Wake the setup QR.** Double-tap the three-zone touch bar on top of
+   Stack-chan's head. Tap once while the QR is visible to hide it; it also
+   closes after 90 seconds. A short Power-button press toggles it on the pinned
+   host firmware.
+3. **Scan and choose.** Open the QR on a phone, choose 中文 or English, select a
+   match, your team (or Neutral), and an optional pregame position (or No
+   position), then tap **Start watching**. The position is only a manual final
+   result reaction preference; no account is read.
+4. **Wait for confirmation.** The page first says that it is waiting for the
+   watcher. The watcher validates the ESPN/Kalshi pairing, atomically updates
+   the local configuration, hot-reloads, and acknowledges the device. No
+   watcher or device restart is needed.
+5. **Watch together.** During the match, Stack-chan updates flags and
+   probabilities and reacts to score and commentary events with its screen,
+   face, lights, head, tones, and optional speech.
+6. **Watch any market.** If no fixture is available, paste a Kalshi event URL
+   or ticker into the same page. The event's four most-traded markets appear in
+   the bottom ticker; fixture-only flags, probability bar, and ESPN commentary
+   are temporarily disabled.
+
+Once per local day, the watcher can proactively ask you to scan and choose a
+match. Configure this with `setup_server.daily_prompt_hour` (`-1` disables it),
+`prompt_minutes_before`, `quiet_hours`, and `lookahead_days`.
+
+## Configuration and language
+
+The setup page switches all labels immediately and persists its language on
+the device. Applying a match also switches watcher-generated speech and
+balloons. The top-level `language` value may be `zh` or `en`.
+
+User-facing text accepts either a legacy string or a localized object:
 
 ```json
 {
@@ -161,104 +268,102 @@ User-facing config values accept either a legacy string or a localized object:
 }
 ```
 
-The same leaf format works for `player_names`, `star_chants`, and custom goal
-signal speeches. A legacy string is intentionally used verbatim in either
-mode, so old configs never change meaning; use the object form when both
-languages are wanted. Missing English names fall back to ESPN's source name,
-and missing chants fall back to the built-in English goal sentence. The phone
-setup service writes bilingual labels and goal-signal text when switching
-matches.
+The same localized leaf format works for `player_names`, `star_chants`, and
+custom goal-signal speech. Missing English names fall back to ESPN's source
+name. A legacy string is used verbatim in both modes.
 
-The LAN TTS server automatically selects Tingting for Chinese text and
-Samantha for English text (override them with `STACKCHAN_TTS_ZH_VOICE` and
-`STACKCHAN_TTS_EN_VOICE`). The `mac_voice` field is also localizable for the
-direct macOS `say` transport.
+Serial transport is intended for direct command/control only. Install
+`pyserial` and configure `stackchan_serial_port` if you choose it; phone setup,
+device status detection, and the options/pending/ack relay require HTTP.
 
-## What changed vs. the original stackchan_control mod
+## Troubleshooting
 
-This is the slimmed-down successor of the mod in
-[`stackchan-kalshi`](https://github.com/xymeow/stackchan-kalshi) (v0.14.0,
-3178-line single file, 1.3MB, five host patch scripts):
+- **The setup page has no matches:** confirm the watcher is running with setup
+  enabled and can reach both public APIs. Only open Kalshi events in the
+  configured `kalshi_series_ticker` that match an ESPN `pre` or `in` fixture
+  by both team names are listed.
+- **The page stays on “waiting for watcher”:** the watcher is stopped, is using
+  serial transport, failed to bind local port `8788`, or cannot reach the
+  device on TCP `80`. Check its terminal output first.
+- **The QR opens the wrong address:** regenerate
+  `mod/assets/setup/setup-qr.png` and reinstall the mod. The bitmap is static;
+  changing the on-screen URL does not rewrite its modules.
+- **Chinese renders as boxes:** apply the optional font patch, prepare a CJK
+  TTF, then rebuild and reflash the host before reinstalling the mod.
+- **There is no speech:** check the TTS `/health` response, computer firewall,
+  and `tts status` through `/api/command`. Visual effects and tone fallback do
+  not depend on TTS.
+- **`stackchan.local` does not resolve:** use the device's LAN IP and regenerate
+  the QR. Reserve that address in DHCP so the static QR stays valid.
+- **Markets show as missing:** the example values are placeholders. Select a
+  live fixture from the setup page or replace them with open tickers returned
+  by `python3 "$MATCHDAY_DIR/tools/stackchan_kalshi_watch.py" discover --query QUERY`.
 
-- **No host source patches.** The marquee speech balloon is drawn by the mod
-  itself; remote TTS uses the host's stock module and native preferences; the
-  CJK font became one optional, reviewable host commit. The old
-  `apply_official_*.py` scripts are all retired.
-- **No embedded audio.** The 1.1MB MAUD voice pack is gone; every legacy clip
-  id maps to a tone pattern, and player-specific lines stream from the LAN TTS
-  server. (A "fat" variant with embedded crowd audio can come back later as an
-  opt-in.)
-- **Watch-focused.** MCP server, image-avatar packs, drawer buttons, and the
-  decorative top-touch/IMU reactions were dropped; the upstream host's default
-  mod and the official `image_avatar_lite` / `mcp` mods cover those better.
-  The top touch bar is still used for one thing that matters here: waking the
-  setup QR with a double tap.
-- **Same wire protocol.** `pkbar`, `balloon temp`, `clip`, `voice`,
-  `celebrate goal|result`, `light flash`, `setup show`, and the match-setup
-  endpoints are unchanged, so existing watcher configs keep working; the
-  watcher also still drives the legacy mod (>= 0.10.0).
+## Device API
 
-## Command surface
-
-`POST /api/command` with plain text (`GET /api/help` lists everything):
+`GET /api/help` lists the plain-text command surface accepted by
+`POST /api/command`:
 
 ```text
-pkbar es 62 AA151B be 38 EF3340      # persistent top probability bar
-balloon temp 8000 西班牙进球了！        # marquee balloon, auto-hide
-voice favorite-goal 7号球员进球啦      # remote TTS, tone fallback
-celebrate goal 170 21 27             # dance + light + voice
-celebrate say 170 21 27 姆巴佩进球啦   # speech + dance + light, synchronized
-celebrate result win 170 21 27 比赛结束 # optional synchronized result speech
-setup show http://<stackchan-ip>/setup
-say 你好                              # balloon + TTS
+pkbar es 62 AA151B be 38 EF3340
+balloon temp 8000 Spain scores!
+voice favorite-goal Number seven scores!
+celebrate goal 170 21 27
+celebrate say 170 21 27 Goal!
+celebrate result win 170 21 27 Full time
+setup show http://stackchan.local/setup
+say Hello
 face happy · look 8 -2 · idle look on · light flash 0 85 164
 ```
 
-`GET /api/status` returns mod name/version, probability bar, TTS, power,
-network state, and the setup-trigger touch counters. `POST /api/control`
-accepts the JSON action form. The watcher-facing match-setup endpoints are
-`/api/match-setup` (+ `/options`, `/apply`, `/ack`, `/pending`,
-`/language`).
+`GET /api/status` reports the mod version, probability bar, TTS, power,
+network, and setup-trigger counters. `POST /api/control` accepts JSON actions.
+The watcher-facing setup endpoints are `/api/match-setup`, `/options`,
+`/apply`, `/ack`, `/pending`, and `/language`.
 
 ## Development
 
-```sh
-# All test suites (stdlib unittest)
-for t in tools/test_*.py; do python3 "$t"; done
-python3 -m tools.test_stackchan_tts_server
+Run the complete local test suite from this repository:
 
-# Build the mod archive without installing (from the stack-chan checkout's firmware/)
+```sh
+cd "$MATCHDAY_DIR"
+python3 -m unittest discover -s tools -p 'test_*.py'
+```
+
+Build a mod archive without installing it from the upstream `firmware/`
+directory:
+
+```sh
+cd "$STACKCHAN_DIR/firmware"
 mcrun -d -m -p esp32:./platforms/m5stackchan_cores3 -t build -f rgb565be \
-  /path/to/stackchan-matchday/mod/manifest.json
+  "$MATCHDAY_DIR/mod/manifest.json"
 ```
 
-To replay the France–Morocco ESPN history (event `760510`) through the same
-alert parser, first preview the generated commands. Execution is opt-in and
-the continuous watcher must be stopped before it writes to the device:
+Replay the France–Morocco ESPN history through the same alert parser. Preview
+is the default; stop the continuous watcher before opting into execution:
 
 ```sh
-python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json
-python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json --language en
-python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json --execute
+python3 "$MATCHDAY_DIR/tools/stackchan_match_replay.py" \
+  --config "$MATCHDAY_DIR/config/kalshi_watchlist.json"
+python3 "$MATCHDAY_DIR/tools/stackchan_match_replay.py" \
+  --config "$MATCHDAY_DIR/config/kalshi_watchlist.json" --language en
+python3 "$MATCHDAY_DIR/tools/stackchan_match_replay.py" \
+  --config "$MATCHDAY_DIR/config/kalshi_watchlist.json" --execute
 ```
 
-The replay reconstructs the score at each commentary entry, waits for each
-celebration/TTS cycle to finish, and centers the head with torque and light off
-when it completes.
+## Security
 
-## Security notes
+The device HTTP API is unauthenticated and CORS-open by design. Use it only on
+a trusted LAN; do not port-forward TCP `80`, `8787`, or `8788`. The fallback AP
+(`StackChan-Matchday` / `stackchan`) appears only when the device has no Wi-Fi
+credentials. Configure Wi-Fi with the official
+[Stack-chan web console](https://stack-chan.github.io/web/) over BLE before
+starting the watcher.
 
-The HTTP API is unauthenticated and CORS-open by design — run it only on a
-trusted LAN and do not port-forward it. The fallback AP (`StackChan-Matchday`
-/ `stackchan`) appears only when the device has no Wi-Fi credentials
-(configure Wi-Fi with the official
-[web console](https://stack-chan.github.io/web/) over BLE, or change the
-constants in `mod/state.js`).
-
-## Credits & licenses
+## Credits and licenses
 
 - [Stack-chan](https://github.com/stack-chan/stack-chan) by Shinya Ishikawa —
-  Apache-2.0
+  Apache-2.0.
 - Flag PNGs derived from [flag-icons](https://github.com/lipis/flag-icons) —
-  MIT (`mod/LICENSE-flag-icons.txt`)
-- This repository — [MIT](LICENSE)
+  MIT; see `mod/LICENSE-flag-icons.txt`.
+- This repository — [MIT](LICENSE).

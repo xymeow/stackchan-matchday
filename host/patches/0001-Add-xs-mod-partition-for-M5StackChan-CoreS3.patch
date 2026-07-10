@@ -6,8 +6,8 @@ Subject: [PATCH 1/2] Add xs mod partition for M5StackChan CoreS3
 The stock CoreS3 partition table has no type-0x40 xs partition, so mods
 cannot install at all (xsHost.c mounts mods from the first 0x40/1
 partition). Reserve 2MB at 0xDF0000 on the 16MB flash; the factory app
-partition stays 0xDE0000. This matches devices already flashed by the
-earlier stackchan-kalshi tooling, so existing units keep their mod slot.
+partition stays 0xDE0000. The layout leaves the final 64KB available for
+the existing storage partition.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 ---
@@ -37,7 +37,7 @@ index 0000000..9ee530c
 @@ -0,0 +1,9 @@
 +# M5StackChan CoreS3 (16MB flash) with a 2MB `xs` mod partition so user
 +# applications install with `npm run mod` instead of reflashing the host.
-+# Layout matches devices previously flashed with the stackchan-kalshi setup.
++# The final 64KB remains available for the existing storage partition.
 +# Name,   Type, SubType, Offset,  Size, Flags
 +nvs,      data, nvs,     0x9000,   0x006000,
 +phy_init, data, phy,     0xF000,   0x001000,
@@ -46,4 +46,3 @@ index 0000000..9ee530c
 +storage,  data, spiffs,  0xFF0000, 0x010000,
 -- 
 2.50.1 (Apple Git-155)
-

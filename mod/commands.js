@@ -1,6 +1,5 @@
 // Text command dispatcher shared by HTTP /api/command and /api/control.
-// Command strings stay wire-compatible with the legacy stackchan_control MOD
-// (minus avatar / top-touch / IMU / MCP, which the matchday mod dropped).
+// The stable command strings let watcher and device tooling evolve separately.
 import {
   EMOTIONS,
   MOD_NAME,
