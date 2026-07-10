@@ -732,7 +732,7 @@ def in_quiet_hours(quiet: QuietHours, now: datetime | None = None) -> bool:
 
 
 def http_json(url: str) -> dict[str, Any]:
-    req = urllib.request.Request(url, headers={"User-Agent": "stackchan-kalshi-watch/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "stackchan-matchday-watch/0.1"})
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as res:
         return json.loads(res.read().decode("utf-8"))
 
@@ -2513,7 +2513,7 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
         method="POST",
         headers={
             "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "stackchan-kalshi-watch/0.1",
+            "User-Agent": "stackchan-matchday-watch/0.1",
         },
     )
     with STACKCHAN_DEVICE_HTTP_LOCK:

@@ -5,10 +5,10 @@
 // tones, goal / final-result celebrations, and a phone setup page. Pairs with
 // the LAN watcher in tools/stackchan_kalshi_watch.py.
 //
-// Designed to run on a stock stack-chan host (dev/v1.0): no host patches, no
-// custom partition table. If the host bundles the optional StackChanCN-24
-// font (see host/cjk-font/), balloons and labels render Chinese; otherwise
-// they fall back to the stock font.
+// Designed for the official stack-chan host (dev/v1.0). CoreS3 needs the
+// build-level mod-partition patch in host/; runtime JS/C stays unchanged. If
+// the host also bundles the optional StackChanCN-24 resource, balloons and
+// labels render Chinese; otherwise they fall back to the stock font.
 import WiFi from 'wifi'
 import {
   AP_PASSWORD,

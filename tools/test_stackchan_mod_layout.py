@@ -26,6 +26,17 @@ class ModLayoutTests(unittest.TestCase):
 
         self.assertIn("keepSetupQrOnTop(robot)", body)
 
+    def test_setup_qr_uses_the_generated_texture_dimensions(self):
+        body = UI_SOURCE.split("function createSetupQrEffect", 1)[1].split(
+            "export function hideSetupQr", 1
+        )[0]
+
+        self.assertIn("new Texture('setup-qr.png')", body)
+        self.assertIn("width: qrWidth", body)
+        self.assertIn("height: qrHeight", body)
+        self.assertNotIn("width: 168", body)
+        self.assertNotIn("height: 168", body)
+
     def test_balloon_and_ticker_keep_setup_qr_modal(self):
         balloon = UI_SOURCE.split("export function showBalloon", 1)[1].split(
             "export function hideBalloon", 1

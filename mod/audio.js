@@ -3,8 +3,7 @@
 //
 // The slim mod ships no audio assets. Dynamic speech streams from the LAN TTS
 // server (tools/stackchan_tts_server.py) through the host's `tts-remote`
-// module; every clip id from the legacy voice pack maps to a short tone
-// pattern so existing watcher configs keep working.
+// module; every named reaction also has a short tone fallback.
 import Modules from 'modules'
 import { asyncWait } from 'stackchan-util'
 import Timer from 'timer'
@@ -23,7 +22,7 @@ const TTS_DEFAULT_PORT = 8787
 const TTS_SAMPLE_RATE = 24000
 const TTS_VOLUME = 0.7
 
-// Tone patterns per legacy fan-clip id: [hz, ms] pairs played in order.
+// Tone patterns per named reaction: [hz, ms] pairs played in order.
 const TONE_CLIPS = new Map([
   ['ready', [[880, 120]]],
   ['match-start', [[523, 150], [659, 150], [784, 220]]],
@@ -181,7 +180,7 @@ export function executeTtsCommand(ttsCommand) {
       return { ok: false, text: 'error tts persistence unavailable\n' }
     }
     savePreference('port', port, TTS_DOMAIN)
-    // Hosts patched with the legacy remote-TTS tweak read stackchan/ttsHost.
+    // Mirror the older preference key for hosts that still read stackchan/ttsHost.
     savePreference('ttsHost', value)
     remoteTts = undefined
     remoteTtsKey = ''
