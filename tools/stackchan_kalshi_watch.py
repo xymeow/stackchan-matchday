@@ -4390,6 +4390,10 @@ def run_watch(args: argparse.Namespace) -> int:
                                     "ok": False,
                                     "error": str(error),
                                 }
+                                print(
+                                    f"match setup apply failed ({request_id}): {error}",
+                                    flush=True,
+                                )
                             setup_acknowledgements[request_id] = acknowledgement
                         acknowledge_device_match_setup(config, acknowledgement)
                         if style_only_request and acknowledgement.get("ok"):
