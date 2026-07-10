@@ -1,5 +1,6 @@
 // Text command dispatcher shared by HTTP /api/command and /api/control.
 // The stable command strings let watcher and device tooling evolve separately.
+import Timer from 'timer'
 import {
   EMOTIONS,
   MOD_NAME,
@@ -8,6 +9,7 @@ import {
   elapsedSince,
   networkPayload,
   normalizeEmotion,
+  nowTicks,
   parseNumbers,
   savePreference,
   state,
@@ -33,6 +35,7 @@ import {
   hideSetupQr,
   noteActivity,
   scheduleBalloonAutoHide,
+  setMuteBadge,
   setProbabilityBar,
   setScreenBrightness,
   setTicker,
@@ -43,6 +46,71 @@ import {
   stopIdleLook,
   temporaryBalloon,
 } from 'matchday/ui'
+
+// ---------------------------------------------------------------------------
+// Boss key: one gesture/command silences speech, tones, celebrations, and
+// alert lights. Indefinite mute persists across reboots; timed mute does not.
+
+let muteTimer
+
+export function setMute(robot, on, minutes = 0) {
+  if (muteTimer !== undefined) {
+    Timer.clear(muteTimer)
+    muteTimer = undefined
+  }
+  state.mute.on = on
+  state.mute.untilTicks = 0
+  if (on && minutes > 0) {
+    const durationMs = Math.round(minutes * 60000)
+    state.mute.untilTicks = nowTicks() + durationMs
+    muteTimer = Timer.set(() => {
+      muteTimer = undefined
+      setMute(robot, false)
+      temporaryBalloon(
+        robot,
+        state.matchSetup.language === 'en' ? 'Sound is back on' : '静音结束，声音已恢复',
+        2600,
+      )
+    }, durationMs)
+    savePreference('muted', undefined)
+  } else {
+    savePreference('muted', on ? true : undefined)
+  }
+  setMuteBadge(robot, on)
+}
+
+function executeMuteCommand(robot, muteCommand) {
+  const parts = muteCommand.trim().split(/\s+/).filter(Boolean)
+  const action = parts[0]?.toLowerCase()
+  const english = state.matchSetup.language === 'en'
+  if (!action || action === 'status') {
+    const remainingMs = state.mute.untilTicks ? Math.max(0, state.mute.untilTicks - nowTicks()) : 0
+    const remaining = remainingMs ? ` (${Math.ceil(remainingMs / 60000)}m left)` : ''
+    return { ok: true, text: `mute ${state.mute.on ? 'on' : 'off'}${remaining}\n` }
+  }
+  if (action === 'on' || action === 'true' || action === '1') {
+    const minutes = Math.round(clamp(toNumber(parts[1], 0), 0, 720))
+    setMute(robot, true, minutes)
+    temporaryBalloon(
+      robot,
+      english
+        ? minutes
+          ? `Muted for ${minutes} min`
+          : 'Muted - long-press the top bar to unmute'
+        : minutes
+          ? `已静音 ${minutes} 分钟`
+          : '已静音，长按头顶恢复',
+      2600,
+    )
+    return { ok: true, text: `ok mute on${minutes ? ` ${minutes}m` : ''}\n` }
+  }
+  if (action === 'off' || action === 'false' || action === '0') {
+    setMute(robot, false)
+    temporaryBalloon(robot, english ? 'Sound is back on' : '声音已恢复', 2200)
+    return { ok: true, text: 'ok mute off\n' }
+  }
+  return { ok: false, text: 'error usage: mute on [minutes] | mute off | mute status\n' }
+}
 
 const COMMAND_USAGE = [
   'help',
@@ -78,6 +146,9 @@ const COMMAND_USAGE = [
   'light rainbow [led-name]',
   'light off [led-name]',
   'tone <hz> <ms> [volume:0..1]',
+  'mute on [minutes]',
+  'mute off',
+  'mute status',
   'tts status',
   'tts host <ip[:port]>',
   'tts host clear',
@@ -110,6 +181,10 @@ export function statusPayload() {
     probabilityBar: state.probabilityBar,
     setup: state.setup,
     celebrating: state.celebrating,
+    mute: {
+      on: state.mute.on,
+      remainingMs: state.mute.untilTicks ? Math.max(0, state.mute.untilTicks - nowTicks()) : 0,
+    },
     fanClips: FAN_CLIP_IDS,
     gaze: state.gaze,
     pose: state.pose,
@@ -272,6 +347,9 @@ function executeLightCommand(robot, lightCommand) {
         text: 'error usage: light flash <r> <g> <b> [duration-ms] [interval-ms]\n',
       }
     }
+    if (state.mute.on) {
+      return { ok: true, text: 'ok light flash skipped (muted)\n' }
+    }
     const r = clamp(toNumber(parts[1]), 0, 255)
     const g = clamp(toNumber(parts[2]), 0, 255)
     const b = clamp(toNumber(parts[3]), 0, 255)
@@ -369,6 +447,10 @@ export async function runCommand(robot, line) {
 
     if (lower === 'screen' || lower.startsWith('screen ')) {
       return executeScreenCommand(command.substring(6))
+    }
+
+    if (lower === 'mute' || lower.startsWith('mute ')) {
+      return executeMuteCommand(robot, command.substring(4))
     }
 
     if (lower === 'tts' || lower.startsWith('tts ')) {
@@ -664,6 +746,9 @@ export async function runCommand(robot, line) {
       if (values.length < 2) {
         return { ok: false, text: 'error usage: tone <hz> <ms> [volume]\n' }
       }
+      if (state.mute.on) {
+        return { ok: true, text: 'ok tone skipped (muted)\n' }
+      }
       await robot.tone(values[0], values[1], values.length >= 3 ? clamp(values[2], 0, 1) : undefined)
       return { ok: true, text: 'ok tone\n' }
     }
@@ -777,6 +862,12 @@ export async function executeJsonAction(robot, payload) {
   if (action === 'tts') {
     if (payload.host !== undefined) return runCommand(robot, `tts host ${payload.host || 'clear'}`)
     return runCommand(robot, 'tts status')
+  }
+  if (action === 'mute' || action === 'boss_key') {
+    if (payload.enabled !== undefined) {
+      return runCommand(robot, payload.enabled ? `mute on ${payload.minutes ?? ''}` : 'mute off')
+    }
+    return runCommand(robot, 'mute status')
   }
   if (action === 'tone') {
     return runCommand(robot, `tone ${payload.hz ?? payload.frequency ?? 440} ${payload.ms ?? payload.duration ?? 200} ${payload.volume ?? ''}`)

@@ -20,6 +20,8 @@ from a phone.
 
 - A persistent two-team probability bar with flags and a bottom market ticker.
 - Goal, card, substitution, close-miss, match-state, and final-result reactions.
+- Three switchable commentary styles: casual co-watching, balanced narration,
+  and professional play-by-play with ESPN-supplied detail.
 - A phone setup page hosted by Stack-chan, with live Chinese/English switching.
 - Double-tap head-touch and Power-button shortcuts for the setup QR code.
 - Fixture discovery, adaptive polling, hot configuration reload, and quiet hours.
@@ -53,6 +55,10 @@ from a phone.
 
 Kalshi and ESPN are read-only inputs to the Python watcher. The watcher sends
 fixture options, display commands, and acknowledgements to the Matchday mod.
+It also parses match events into shared facts and renders the selected
+commentary style; the mod only forwards settings and plays the resulting
+display, speech, and reaction commands. The upstream host firmware and TTS
+module are not modified for commentary styling.
 The phone talks to Stack-chan's own `/setup` page; the device stores a pending
 selection, and the watcher validates it, atomically updates the local JSON
 configuration, hot-reloads, and acknowledges the device. For speech,
@@ -73,6 +79,10 @@ not the primary QR flow.
   serial helper, asset generator, and tests. The default HTTP workflow uses the
   Python standard library; serial transport additionally requires `pyserial`.
 - `config/` — the example watcher configuration and flag-pack definition.
+- `docs/` — the [commentary-styles PRD](docs/commentary-styles-prd.md) and
+  version-specific upgrade notes, including the bilingual
+  [Matchday MOD 1.5.0 notes](docs/releases/1.5.0.md) and
+  [1.4.0 notes](docs/releases/1.4.0.md).
 
 ## Requirements
 
@@ -96,6 +106,11 @@ export STACKCHAN_DIR="$HOME/src/stack-chan"
 ```
 
 ## Install
+
+Already running an earlier Matchday release? For 1.4.0 commentary styles,
+update this watcher checkout and reinstall the Matchday mod. You do not need
+to rebuild or reflash the official host firmware or replace the TTS module;
+see the [1.4.0 release notes](docs/releases/1.4.0.md).
 
 ### 1. Clone and prepare the upstream build environment
 
@@ -170,6 +185,21 @@ npm run mod --target=esp32:./platforms/m5stackchan_cores3 -- -f rgb565be \
 ```
 
 `-f rgb565be` is required on CoreS3; without it, flag colors are byte-swapped.
+
+`npm run mod` installs over the xsbug debug protocol, which needs an xsbug
+listener and can stall mid-write while the device is busy (a stalled install
+invalidates the mod until reinstalled). The debugger-free alternative is to
+build only, then write the archive straight into the `xs` partition:
+
+```sh
+mcrun -d -m -p esp32:./platforms/m5stackchan_cores3 -t build -f rgb565be \
+  "$MATCHDAY_DIR/mod/manifest.json"
+python3 -m esptool --chip esp32s3 --before default-reset --after hard-reset \
+  write-flash 0xDF0000 "$MODDABLE/build/bin/esp32/debug/mod/mod.xsa"
+```
+
+`0xDF0000` is the `xs` partition offset from the partition patch; esptool
+verifies the write and the host mounts the archive on the reset that follows.
 Verify the mod from the watcher computer:
 
 ```sh
@@ -245,9 +275,10 @@ falls back to short tone patterns.
    closes after 90 seconds. A short Power-button press toggles it on the pinned
    host firmware.
 3. **Scan and choose.** Open the QR on a phone, choose 中文 or English, select a
-   match, your team (or Neutral), and an optional pregame position (or No
-   position), then tap **Start watching**. The position is only a manual final
-   result reaction preference; no account is read.
+   match, your team (or Neutral), an optional pregame position (or No
+   position), and a commentary style, then tap **Start watching**. The
+   position is only a manual final result reaction preference; no account is
+   read.
 4. **Wait for confirmation.** The page first says that it is waiting for the
    watcher. The watcher validates the ESPN/Kalshi pairing, atomically updates
    the local configuration, hot-reloads, and acknowledges the device. No
@@ -259,6 +290,13 @@ falls back to short tone patterns.
    or ticker into the same page. The event's four most-traded markets appear in
    the bottom ticker; fixture-only flags, probability bar, and ESPN commentary
    are temporarily disabled.
+7. **Mute for meetings (boss key).** Hold the top touch bar for about one
+   second to toggle mute: speech, tones, celebrations, and alert lights stop,
+   while the probability bar, balloons, and ticker keep updating silently. A
+   corner `MUTE` / `静音` badge stays visible until unmuted. `mute on 60` over
+   `/api/command` (or the control panel's *mute 60m* button) silences a timed
+   meeting and announces when sound returns; an indefinite mute survives
+   reboots.
 
 Once per local day, the watcher can proactively ask you to scan and choose a
 match. Configure this with `setup_server.daily_prompt_hour` (`-1` disables it),
@@ -277,6 +315,7 @@ User-facing text accepts either a legacy string or a localized object:
   "language": "en",
   "mac_voice": {"zh": "Tingting", "en": "Samantha"},
   "espn": {
+    "commentary_style": "balanced",
     "label": {"zh": "法国 vs 摩洛哥", "en": "France vs Morocco"},
     "team_names": {
       "France": {"zh": "法国", "en": "France"}
@@ -292,6 +331,38 @@ User-facing text accepts either a legacy string or a localized object:
 The same localized leaf format works for `player_names`, `star_chants`, and
 custom goal-signal speech. Missing English names fall back to ESPN's source
 name. A legacy string is used verbatim in both modes.
+
+### Commentary styles
+
+`espn.commentary_style` is a persistent global preference and accepts exactly
+`casual`, `balanced`, or `professional`. Configurations that omit it continue
+to use `balanced`.
+
+| Value | Voice | Device balloon |
+| --- | --- | --- |
+| `casual` | Friendly co-watching language, while retaining every core fact | Compact event summary |
+| `balanced` | Clear, natural narration compatible with the previous behavior | Compact event summary |
+| `professional` | Core facts plus reliably parsed ESPN details and football terminology | Compact event summary; detail stays in speech |
+
+Every style keeps the match time, event type, team, required players, event
+result, and current score. Penalties, cards, and substitutions keep all
+necessary participants. Suspected goals and events awaiting commentary
+confirmation remain explicitly uncertain in every style. Professional speech
+may add an assist or cross, shot type and body part, field or goal location,
+goalkeeper save, set-piece position, or substitution/injury reason only when
+ESPN explicitly supplies it and the watcher can parse it reliably; it never
+reads the raw English commentary aloud or guesses missing detail.
+
+Across all three styles, balloons normally stay in the form “time +
+player/team + event + score”; only punctuation and a small amount of wording
+vary.
+
+The selected style also applies to match phases and results, Kalshi market
+jumps, and suspected-goal alerts. It changes wording only: TTS voice and rate,
+sound effects, celebrations, expressions, lights, priorities, and alert
+switches are unchanged. You can switch it from either setup page during a
+match; newly generated alerts use the new style immediately without replaying
+old ESPN events or resetting market baselines, queues, or polling state.
 
 Serial transport is intended for direct command/control only. Install
 `pyserial` and configure `stackchan_serial_port` if you choose it; phone setup,
@@ -311,9 +382,19 @@ device status detection, and the options/pending/ack relay require HTTP.
   changing the on-screen URL does not rewrite its modules.
 - **Chinese renders as boxes:** apply the optional font patch, prepare a CJK
   TTF, then rebuild and reflash the host before reinstalling the mod.
-- **There is no speech:** check the TTS `/health` response, computer firewall,
-  and `tts status` through `/api/command`. Visual effects and tone fallback do
-  not depend on TTS.
+- **There is no speech:** first look for the corner `MUTE` / `静音` badge or
+  run `mute status` — a long-press on the top bar toggles the boss key. Then
+  check the TTS `/health` response, computer firewall, and `tts status`
+  through `/api/command`. Visual effects and tone fallback do not depend on
+  TTS.
+- **`npm run mod` hangs at "Installing mod...":** the xsbug-protocol install
+  stalled; a killed install leaves the mod missing until reinstalled. Quit
+  xsbug, then use the build + `esptool write-flash 0xDF0000` path from the
+  install section — it needs no debugger and verifies the write.
+- **Device freezes and drops off the network while xsbug is attached:** xsbug
+  pauses the whole runtime at exception breakpoints, stopping Wi-Fi, touch,
+  and timers. Detach `serial2xsbug`/xsbug for unattended running; to capture
+  logs without freezing, use `$MODDABLE/tools/xsbug-log` instead.
 - **`stackchan.local` does not resolve:** use the device's LAN IP and regenerate
   the QR. Reserve that address in DHCP so the static QR stays valid.
 - **Markets show as missing:** the example values are placeholders. Select a
@@ -334,6 +415,7 @@ celebrate say 170 21 27 Goal!
 celebrate result win 170 21 27 Full time
 setup show http://stackchan.local/setup
 say Hello
+mute on 60 · mute off · mute status
 face happy · look 8 -2 · idle look on · light flash 0 85 164
 ```
 
@@ -342,6 +424,13 @@ network, and setup-trigger counters. `POST /api/control` accepts JSON actions.
 The watcher-facing setup endpoints are `/api/match-setup`, `/options`,
 `/apply`, `/ack`, `/pending`, and `/language`.
 
+Commentary style has a dedicated relay path. The device accepts
+`POST /api/match-setup/style` with
+`{"commentary_style":"casual|balanced|professional"}` and forwards it through
+the existing pending/ack flow. The watcher-hosted admin service accepts the
+same body at `POST /api/setup/style`; `GET /api/setup/status` reports the
+effective value.
+
 ## Development
 
 Run the complete local test suite from this repository:
@@ -349,6 +438,7 @@ Run the complete local test suite from this repository:
 ```sh
 cd "$MATCHDAY_DIR"
 python3 -m unittest discover -s tools -p 'test_*.py'
+node tools/test_stackchan_mod_web_behavior.mjs
 ```
 
 Build a mod archive without installing it from the upstream `firmware/`

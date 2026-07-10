@@ -57,6 +57,14 @@ export async function playFanClip(robot, clipId) {
       text: `error invalid clip; available: ${FAN_CLIP_IDS.join(', ')}\n`,
     }
   }
+  if (state.mute.on) {
+    return { ok: true, text: `ok clip ${id} skipped (muted)\n` }
+  }
+  // A tone during an active TTS stream fights over the speaker and errors;
+  // callers treat that as delivery failure and retry, so skip successfully.
+  if (state.tts.busy) {
+    return { ok: true, text: `ok clip ${id} skipped (tts busy)\n` }
+  }
   try {
     for (const [hz, ms] of pattern) {
       await robot.tone(hz, ms, TONE_VOLUME)
@@ -114,6 +122,9 @@ function ensureRemoteTts() {
 export async function speakRemote(text) {
   const speech = String(text ?? '').trim()
   if (!speech) return { ok: false, text: 'error empty speech\n' }
+  if (state.mute.on) {
+    return { ok: true, text: 'ok speech skipped (muted)\n' }
+  }
   const tts = ensureRemoteTts()
   if (!tts) {
     return { ok: false, text: 'error tts host unset; run: tts host <ip[:port]>\n' }
@@ -245,6 +256,11 @@ const LOSE_POSES = [
 ]
 
 async function runCelebration(robot, { label, poses, emotion, mouth, light, blinkMs, blinkRestoreMs, voice }) {
+  if (state.mute.on) {
+    // Boss key: no sound, no dancing, no lights. The watcher's balloon has
+    // already announced the event silently.
+    return { ok: true, text: `ok ${label} skipped (muted)\n` }
+  }
   if (state.celebrating) {
     return { ok: false, text: 'error celebration already in progress\n' }
   }

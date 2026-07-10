@@ -4,8 +4,10 @@ import Net from 'net'
 import Time from 'time'
 
 export const MOD_NAME = 'stackchan_matchday'
-export const MOD_VERSION = '1.3.0'
+export const MOD_VERSION = '1.5.0'
 export const PREF_DOMAIN = 'stackchan'
+
+export const COMMENTARY_STYLES = ['casual', 'balanced', 'professional']
 
 export const HTTP_PORT = 80
 export const AP_SSID = 'StackChan-Matchday'
@@ -54,6 +56,12 @@ export const state = {
   speech: '',
   balloon: '',
   ticker: '',
+  // Boss key: while on, speech/clips/tone/celebration motion/alert lights are
+  // all suppressed; silent visuals (pkbar, balloons, ticker) keep working.
+  mute: {
+    on: false,
+    untilTicks: 0,
+  },
   probabilityBar: {
     visible: false,
     position: 'top',
@@ -86,6 +94,7 @@ export const state = {
   },
   matchSetup: {
     language: 'zh',
+    commentaryStyle: 'balanced',
     options: [],
     current: {},
     pending: null,

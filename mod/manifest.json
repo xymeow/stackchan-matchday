@@ -10,6 +10,6 @@
     "matchday/web": "./web"
   },
   "resources": {
-    "*": ["./assets/flags/*", "./assets/setup/*"]
+    "*": ["./assets/flags/*", "./assets/setup/*", "./assets/ui/*"]
   }
 }

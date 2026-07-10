@@ -13,6 +13,7 @@ import WiFi from 'wifi'
 import {
   AP_PASSWORD,
   AP_SSID,
+  COMMENTARY_STYLES,
   MOD_VERSION,
   clamp,
   hasUsableIp,
@@ -27,6 +28,7 @@ import {
 import {
   hideSetupQr,
   noteActivity,
+  setMuteBadge,
   setScreenBrightness,
   showBalloon,
   showSetupQr,
@@ -34,6 +36,7 @@ import {
   startPowerManager,
   temporaryBalloon,
 } from 'matchday/ui'
+import { runCommand } from 'matchday/commands'
 import { startHttp } from 'matchday/web'
 
 const SETUP_POWER_DEBOUNCE_MS = 600
@@ -51,6 +54,8 @@ const SETUP_TOP_COOLDOWN_MS = 1500
 const SETUP_TOP_TOUCH_ON = 2
 const SETUP_TOP_TOUCH_OFF = 1
 const SETUP_TOP_SWIPE_REJECT = 45
+// Boss key: hold the top bar this long to toggle mute without the phone.
+const MUTE_LONG_PRESS_MS = 1100
 
 function restoreSettings(robot) {
   try {
@@ -80,6 +85,17 @@ function restoreSettings(robot) {
     const savedLanguage = String(readPreference('language', ''))
     if (savedLanguage === 'zh' || savedLanguage === 'en') {
       state.matchSetup.language = savedLanguage
+    }
+
+    const savedCommentaryStyle = String(readPreference('commentaryStyle', 'balanced'))
+      .trim()
+      .toLowerCase()
+    if (COMMENTARY_STYLES.includes(savedCommentaryStyle)) {
+      state.matchSetup.commentaryStyle = savedCommentaryStyle
+    }
+
+    if (readPreference('muted', false) === true) {
+      state.mute.on = true
     }
 
     const pendingSetup = String(readPreference('matchSetupPending', ''))
@@ -175,6 +191,7 @@ function configureSetupTriggers(robot) {
     let touchStartTicks = 0
     let touchStartPosition = 0
     let touchMaxDrift = 0
+    let longPressFired = false
     let firstTapTicks
     let ignoreUntilTicks = 0
 
@@ -229,6 +246,7 @@ function configureSetupTriggers(robot) {
             touchStartTicks = ticks
             touchStartPosition = touchState.position
             touchMaxDrift = 0
+            longPressFired = false
           }
           return
         }
@@ -236,6 +254,21 @@ function configureSetupTriggers(robot) {
         if (intensity > SETUP_TOP_TOUCH_OFF) {
           const drift = Math.abs(touchState.position - touchStartPosition)
           if (drift > touchMaxDrift) touchMaxDrift = drift
+          // Boss key: a steady long hold toggles mute while still pressed, so
+          // the user gets feedback (balloon + badge) before letting go.
+          if (
+            !longPressFired &&
+            ticks - touchStartTicks >= MUTE_LONG_PRESS_MS &&
+            touchMaxDrift <= SETUP_TOP_SWIPE_REJECT
+          ) {
+            longPressFired = true
+            noteActivity('setup-trigger:top-long-press')
+            state.setup.trigger.lastSource = 'top-long-press'
+            state.setup.trigger.lastTriggeredTicks = ticks
+            runCommand(robot, state.mute.on ? 'mute off' : 'mute on').catch((error) => {
+              state.lastError = `mute toggle: ${error}`
+            })
+          }
           return
         }
 
@@ -244,6 +277,12 @@ function configureSetupTriggers(robot) {
         const heldMs = ticks - touchStartTicks
         touchState.lastTapMs = heldMs
         touchState.lastDrift = touchMaxDrift
+        if (longPressFired) {
+          // The hold already toggled mute; its release is not a tap.
+          longPressFired = false
+          firstTapTicks = undefined
+          return
+        }
         const isTap = heldMs <= SETUP_TOP_TAP_MAX_MS && touchMaxDrift <= SETUP_TOP_SWIPE_REJECT
         if (!isTap) {
           firstTapTicks = undefined
@@ -269,6 +308,7 @@ export function onRobotCreated(robot, _device) {
   state.diagnostics.startedTicks = nowTicks()
   noteActivity('boot')
   restoreSettings(robot)
+  if (state.mute.on) setMuteBadge(robot, true)
   temporaryBalloon(robot, `matchday v${MOD_VERSION}`, 2200)
   startPowerManager()
   startFallbackAccessPoint(robot)

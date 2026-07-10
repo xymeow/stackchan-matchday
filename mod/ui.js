@@ -313,6 +313,7 @@ export function setTicker(robot, message) {
 // Two-team probability bar (PK bar) with flags.
 
 let probabilityBarEffect
+const PK_BALL_SIZE = 24
 
 function layoutProbabilitySide(segmentX, segmentWidth, flag, value, percent, leftSide) {
   const edge = 4
@@ -355,6 +356,16 @@ function flagSkin(code) {
   })
 }
 
+function footballSkin() {
+  return new Skin({
+    texture: { path: 'football.png' },
+    x: 0,
+    y: 0,
+    width: PK_BALL_SIZE,
+    height: PK_BALL_SIZE,
+  })
+}
+
 class ProbabilityBarBehavior extends Behavior {
   data
 
@@ -384,7 +395,7 @@ class ProbabilityBarBehavior extends Behavior {
     const rightWidth = Math.max(0, width - leftWidth)
     const leftFill = container.content('pkLeftFill')
     const rightFill = container.content('pkRightFill')
-    const divider = container.content('pkDivider')
+    const ball = container.content('pkBall')
     const leftFlag = container.content('pkLeftFlag')
     const rightFlag = container.content('pkRightFlag')
     const leftValue = container.content('pkLeftValue')
@@ -396,7 +407,9 @@ class ProbabilityBarBehavior extends Behavior {
     rightFill.x = leftWidth
     rightFill.width = rightWidth
     rightFill.skin = new Skin({ fill: this.data.rightColor })
-    divider.x = clamp(leftWidth - 1, 0, Math.max(0, width - 2))
+    // Keep the football centered on the live probability split, including at
+    // the 0% and 100% edges where half of an unclamped icon would disappear.
+    ball.x = clamp(leftWidth - PK_BALL_SIZE / 2, 0, Math.max(0, width - PK_BALL_SIZE))
     leftFlag.skin = flagSkin(this.data.leftFlag)
     rightFlag.skin = flagSkin(this.data.rightFlag)
     const rightPercent = 100 - leftPercent
@@ -433,12 +446,12 @@ function createProbabilityBarEffect(data) {
       new Content(null, { name: 'pkLeftFill', left: 0, top: 0, bottom: 0, width: 160 }),
       new Content(null, { name: 'pkRightFill', left: 160, top: 0, bottom: 0, width: 160 }),
       new Content(null, {
-        name: 'pkDivider',
-        left: 159,
-        top: 0,
-        bottom: 0,
-        width: 2,
-        skin: new Skin({ fill: '#ffffff' }),
+        name: 'pkBall',
+        left: 148,
+        top: (PK_BAR_HEIGHT - PK_BALL_SIZE) / 2,
+        width: PK_BALL_SIZE,
+        height: PK_BALL_SIZE,
+        skin: footballSkin(),
       }),
       new Content(null, { name: 'pkLeftFlag', left: 0, top: 8, width: FLAG_WIDTH, height: FLAG_HEIGHT }),
       new Label(null, { name: 'pkLeftValue', left: 0, top: 0, bottom: 0, width: 30, string: '50' }),
@@ -606,6 +619,42 @@ export function showSetupQr(robot, value) {
 }
 
 // ---------------------------------------------------------------------------
+// Mute badge: a small persistent pill so a silenced robot is visibly muted
+// rather than mysteriously quiet. Sits above the balloon zone.
+
+let muteBadgeEffect
+
+export function setMuteBadge(robot, visible) {
+  if (muteBadgeEffect !== undefined) {
+    robot.renderer.removeDecorator(muteBadgeEffect)
+    muteBadgeEffect = undefined
+  }
+  if (!visible) return
+  const text = state.matchSetup.language === 'en' ? 'MUTE' : '静音'
+  muteBadgeEffect = new Container(null, {
+    name: 'MuteBadge',
+    right: 4,
+    bottom: 78,
+    width: text === 'MUTE' ? 76 : 62,
+    height: 30,
+    active: false,
+    skin: new Skin({ fill: '#17212b' }),
+    contents: [
+      new Label(null, {
+        left: 0,
+        right: 0,
+        top: 0,
+        bottom: 0,
+        string: text,
+        style: new Style({ font: FONT, color: '#ffffff', horizontal: 'center', vertical: 'middle' }),
+      }),
+    ],
+  })
+  robot.renderer.addDecorator(muteBadgeEffect)
+  keepSetupQrOnTop(robot)
+}
+
+// ---------------------------------------------------------------------------
 // Screen brightness, auto-dim power management, idle look.
 
 let powerTimer
@@ -653,6 +702,11 @@ export function startPowerManager() {
   }
   powerTimer = Timer.repeat(() => {
     if (!state.power.autoDim || state.power.dimmed) return
+    // A visible probability bar or ticker means a match/market is being
+    // watched: keep the screen awake through quiet stretches (halftime, slow
+    // markets) instead of racing the watcher's 30s display refresh, which
+    // otherwise produces a dim/wake flicker. `screen sleep` still works.
+    if (state.probabilityBar.visible || state.ticker) return
     if (elapsedSince(state.power.lastActivityTicks) < state.power.idleMs) return
     const result = setScreenBrightness(state.power.dimBrightness)
     if (result.ok) {

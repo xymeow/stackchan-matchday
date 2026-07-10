@@ -34,6 +34,9 @@ jobs:
             node --check "/tmp/modcheck/$(basename "$f" .js).mjs"
           done
 
+      - name: Mod match-setup relay behavior
+        run: node tools/test_stackchan_mod_web_behavior.mjs
+
       - name: JSON validity
         run: |
           set -e

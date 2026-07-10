@@ -154,17 +154,17 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(goal.kind, "espn_goal")
         self.assertEqual(
             goal.balloon,
-            "60' Kylian Mbappé scores! | France 1-0 Morocco",
+            "60' FRA Mbappé goal | FRA 1-0 MAR",
         )
         self.assertEqual(
             goal.speech,
-            "Kylian Mbappé! Kylian Mbappé! He's scored! France's number 10 delivers! "
+            "At 60', Kylian Mbappé! Kylian Mbappé! He's scored! France's number 10 delivers! "
             "It is France 1, Morocco 0.",
         )
         self.assertFalse(goal.is_final)
 
         self.assertEqual(result.kind, "espn_status")
-        self.assertEqual(result.balloon, "Full time | France 2-0 Morocco")
+        self.assertEqual(result.balloon, "Full time | FRA 2-0 MAR")
         self.assertEqual(result.speech, "Full time. It is France 2, Morocco 0.")
         self.assertTrue(result.is_final)
         self.assertTrue(watcher.is_final_status_alert(result))

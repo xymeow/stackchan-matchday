@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -141,6 +143,7 @@ class MatchSetupTests(unittest.TestCase):
                             "favorite_team": "Spain",
                             "position_team": "",
                             "language": "en",
+                            "commentary_style": "professional",
                         }
                     )
             updated = json.loads(path.read_text(encoding="utf-8"))
@@ -148,12 +151,14 @@ class MatchSetupTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["language"], "en")
+        self.assertEqual(result["commentary_style"], "professional")
         self.assertEqual(result["label"], "Spain vs Belgium")
         self.assertEqual(updated["language"], "en")
         self.assertEqual(updated["espn"]["event_id"], "760511")
         self.assertEqual(updated["espn"]["starts_at"], "2026-07-10T19:00:00+00:00")
         self.assertEqual(updated["espn"]["favorite_team"], "Spain")
         self.assertEqual(updated["espn"]["position_team"], "")
+        self.assertEqual(updated["espn"]["commentary_style"], "professional")
         self.assertEqual(
             updated["espn"]["label"],
             {"zh": "西班牙 vs 比利时", "en": "Spain vs Belgium"},
@@ -172,11 +177,20 @@ class MatchSetupTests(unittest.TestCase):
         self.assertIn("西班牙", updated["markets"][0]["goal_signal_up_speech"]["zh"])
         self.assertIn("Spain", updated["markets"][0]["goal_signal_up_speech"]["en"])
         self.assertIn("Belgium", updated["markets"][0]["goal_signal_down_speech"]["en"])
+        self.assertEqual(
+            updated["markets"][0]["goal_signal_up_team"],
+            {"zh": "西班牙", "en": "Spain"},
+        )
+        self.assertEqual(
+            updated["markets"][0]["goal_signal_down_team"],
+            {"zh": "比利时", "en": "Belgium"},
+        )
         self.assertTrue(updated["markets"][0]["alerts_enabled"])
         self.assertFalse(updated["markets"][1]["alerts_enabled"])
         self.assertEqual(english_status["label"], "Spain vs Belgium")
         self.assertEqual(english_status["favorite_team"], "Spain")
         self.assertEqual(english_status["language"], "en")
+        self.assertEqual(english_status["commentary_style"], "professional")
         self.assertTrue(instance.take_reload_requested())
 
     def test_apply_rejects_unsupported_language_before_fetching(self):
@@ -194,7 +208,93 @@ class MatchSetupTests(unittest.TestCase):
         self.assertIn('name="language"', page)
         self.assertIn('value="zh"', page)
         self.assertIn('value="en"', page)
+        self.assertIn('name="commentary_style"', page)
+        self.assertIn('value="casual"', page)
+        self.assertIn('value="balanced"', page)
+        self.assertIn('value="professional"', page)
+        self.assertIn('id="style-effective"', page)
+        self.assertIn("showEffectiveStyle(style)", page)
+        self.assertIn("/api/setup/style", page)
         self.assertIn('id="apply"', page)
+
+    def test_style_only_update_persists_without_requesting_full_reload(self):
+        initial = {
+            "language": "zh",
+            "espn": {"commentary_style": "balanced"},
+            "setup_server": {},
+            "markets": [{"ticker": "TEST", "label": "测试"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+
+            result = instance.apply_commentary_style(
+                {"commentary_style": "professional"}
+            )
+            updated = json.loads(path.read_text(encoding="utf-8"))
+
+            self.assertFalse(instance.take_reload_requested())
+            self.assertEqual(instance.take_commentary_style_update(), "professional")
+            self.assertIsNone(instance.take_commentary_style_update())
+
+        self.assertEqual(result, {"ok": True, "commentary_style": "professional"})
+        self.assertEqual(updated["espn"]["commentary_style"], "professional")
+
+    def test_style_only_update_rejects_missing_or_invalid_value(self):
+        initial = {"espn": {}, "markets": [{"ticker": "TEST", "label": "test"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+
+            with self.assertRaisesRegex(ValueError, "commentary_style is required"):
+                instance.apply_commentary_style({})
+            with self.assertRaisesRegex(ValueError, "espn.commentary_style"):
+                instance.apply_commentary_style({"commentary_style": "dramatic"})
+
+    def test_config_mutations_are_serialized_across_setup_threads(self):
+        initial = {"espn": {}, "markets": [{"ticker": "TEST", "label": "test"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+            real_write = setup.atomic_write_json
+            tracker_lock = threading.Lock()
+            active = 0
+            max_active = 0
+            errors = []
+
+            def tracked_write(target, payload):
+                nonlocal active, max_active
+                with tracker_lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    time.sleep(0.02)
+                    real_write(target, payload)
+                finally:
+                    with tracker_lock:
+                        active -= 1
+
+            def update(style):
+                try:
+                    instance.apply_commentary_style({"commentary_style": style})
+                except Exception as error:  # pragma: no cover - asserted below.
+                    errors.append(error)
+
+            with patch.object(setup, "atomic_write_json", side_effect=tracked_write):
+                threads = [
+                    threading.Thread(target=update, args=(style,))
+                    for style in ("casual", "professional")
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(max_active, 1)
 
 
 KALSHI_GENERAL_EVENT = {

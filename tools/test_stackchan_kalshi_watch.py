@@ -171,6 +171,110 @@ class ConfigLocalizationTests(unittest.TestCase):
             watcher.sync_device_match_setup(config, [], current)
 
         self.assertEqual(post.call_args.args[1]["language"], "en")
+        self.assertEqual(post.call_args.args[1]["commentary_style"], "balanced")
+
+    def test_style_sync_is_lightweight_and_does_not_send_options(self):
+        config = watcher.WatchConfig(
+            stackchan_transport="http",
+            stackchan_host="192.0.2.1",
+        )
+
+        with patch.object(watcher, "post_json") as post:
+            synced = watcher.sync_device_commentary_style(config, "professional")
+
+        self.assertTrue(synced)
+        self.assertEqual(
+            post.call_args.args,
+            (
+                "http://192.0.2.1/api/match-setup/options",
+                {"commentary_style": "professional"},
+            ),
+        )
+        self.assertEqual(post.call_args.kwargs, {"timeout": 2})
+
+        with patch.object(
+            watcher,
+            "post_json",
+            side_effect=watcher.urllib.error.URLError("offline"),
+        ):
+            self.assertFalse(
+                watcher.sync_device_commentary_style(config, "professional")
+            )
+
+    def test_commentary_style_defaults_validates_and_propagates_to_markets(self):
+        raw = self.localized_config()
+        raw["espn"]["commentary_style"] = "professional"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            professional = watcher.load_config(path)
+            del raw["espn"]["commentary_style"]
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            defaulted = watcher.load_config(path)
+            raw["espn"]["commentary_style"] = "dramatic"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(watcher.ConfigError, "espn.commentary_style"):
+                watcher.load_config(path)
+
+        self.assertEqual(professional.espn.commentary_style, "professional")
+        self.assertEqual(professional.markets[0].commentary_style, "professional")
+        self.assertEqual(defaulted.espn.commentary_style, "balanced")
+        with self.assertRaisesRegex(watcher.ConfigError, "espn.commentary_style"):
+            watcher.normalize_commentary_style("")
+
+    def test_live_style_update_mutates_only_rendering_preferences(self):
+        config = watcher.WatchConfig(
+            espn=espn_config(),
+            markets=[
+                watcher.MarketConfig(
+                    "FRA",
+                    "法国晋级",
+                    alerts_enabled=False,
+                    goal_signal_move_cents=8,
+                )
+            ],
+        )
+        espn_config_object = config.espn
+        market_config_object = config.markets[0]
+
+        style = watcher.apply_live_commentary_style(config, "casual")
+
+        self.assertEqual(style, "casual")
+        self.assertIs(config.espn, espn_config_object)
+        self.assertIs(config.markets[0], market_config_object)
+        self.assertEqual(config.espn.commentary_style, "casual")
+        self.assertEqual(config.markets[0].commentary_style, "casual")
+        self.assertEqual(config.espn.event_id, "760510")
+        self.assertFalse(config.markets[0].alerts_enabled)
+        self.assertEqual(config.markets[0].goal_signal_move_cents, 8)
+
+    def test_old_goal_signal_speeches_migrate_exact_team_facts(self):
+        raw = {
+            "language": "zh",
+            "espn": {
+                "team_names": {
+                    "France": "法国",
+                    "FRA": "法国",
+                    "Morocco": "摩洛哥",
+                    "MAR": "摩洛哥",
+                }
+            },
+            "markets": [
+                {
+                    "ticker": "FRA",
+                    "label": "法国晋级",
+                    "goal_signal_up_speech": "盘口突然拉升！法国这边很可能进球了！等待文字直播确认。",
+                    "goal_signal_down_speech": "盘口突然跳水！摩洛哥可能进球了，等待文字直播确认。",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            config = watcher.load_config(path)
+
+        self.assertEqual(config.markets[0].goal_signal_up_team, "法国")
+        self.assertEqual(config.markets[0].goal_signal_down_team, "摩洛哥")
 
 
 class ESPNAlertTests(unittest.TestCase):
@@ -333,6 +437,60 @@ class ESPNAlertTests(unittest.TestCase):
         self.assertEqual(alerts, [])
         self.assertIn("sequence:7", state.seen_commentary)
 
+    def test_commentary_key_prefers_stable_play_id_over_sequence(self):
+        item = {"sequence": 2, "play": {"id": "49747102"}}
+
+        self.assertEqual(watcher.commentary_key(item), "play:49747102")
+
+    def test_resequenced_play_is_not_announced_twice(self):
+        state = watcher.ESPNState()
+        watcher.evaluate_espn_match(match_snapshot([]), espn_config(), state)
+        first = {
+            "sequence": 2,
+            "time": {"displayValue": "2'"},
+            "text": "Corner, France. Conceded by Morocco.",
+            "play": {
+                "id": "49747102",
+                "text": "Corner, France. Conceded by Morocco.",
+                "type": {"type": "corner-awarded"},
+                "team": {"displayName": "France"},
+            },
+        }
+        revised = {**first, "sequence": 3}
+
+        first_alerts = watcher.evaluate_espn_match(
+            match_snapshot([first]), espn_config(), state
+        )
+        revised_alerts = watcher.evaluate_espn_match(
+            match_snapshot([revised]), espn_config(), state
+        )
+
+        self.assertEqual(len(first_alerts), 1)
+        self.assertEqual(revised_alerts, [])
+        self.assertIn("play:49747102", state.seen_commentary)
+
+    def test_paired_play_rows_use_one_canonical_description(self):
+        secondary = {
+            "sequence": 2,
+            "time": {"displayValue": "2'"},
+            "text": "Conceded by Morocco.",
+            "play": {
+                "id": "49747102",
+                "text": "Corner, France. Conceded by Morocco.",
+                "type": {"type": "corner-awarded"},
+                "team": {"displayName": "France"},
+            },
+        }
+        canonical = {**secondary, "sequence": 3, "text": secondary["play"]["text"]}
+        state = watcher.ESPNState(initialized=True, last_status_state="in")
+
+        alerts = watcher.evaluate_espn_match(
+            match_snapshot([secondary, canonical]), espn_config(), state
+        )
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].detail, canonical["text"])
+
     def test_first_fetch_replays_recent_critical_goal(self):
         wallclock = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
         goal = {
@@ -386,7 +544,7 @@ class ESPNAlertTests(unittest.TestCase):
         self.assertTrue(alerts[0].prefer_dynamic_voice)
         self.assertIn("法国", alerts[0].balloon)
         self.assertIn("姆巴佩进球", alerts[0].balloon)
-        self.assertIn("法国 1-0 摩洛哥", alerts[0].balloon)
+        self.assertIn("FRA 1-0 MAR", alerts[0].balloon)
         self.assertIn("姆巴佩！姆巴佩！打进去了！", alerts[0].speech)
 
     def test_non_star_goal_uses_jersey_number_and_name(self):
@@ -409,7 +567,7 @@ class ESPNAlertTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(alert)
-        self.assertIn("24号球员Jean Prospect", alert.balloon)
+        self.assertIn("Prospect", alert.balloon)
         self.assertIn("24号球员Jean Prospect！球进啦！", alert.speech)
 
     def test_roster_parser_indexes_player_id_and_names(self):
@@ -718,6 +876,459 @@ class ESPNAlertTests(unittest.TestCase):
         self.assertIn("姆巴佩可能有伤", alert.speech)
 
 
+class CommentaryStyleTests(unittest.TestCase):
+    def _players(self):
+        mbappe = watcher.MatchPlayer(
+            "1", "Kylian Mbappé", "K. Mbappé", "10", "France", "FRA"
+        )
+        dembele = watcher.MatchPlayer(
+            "2", "Ousmane Dembélé", "O. Dembélé", "11", "France", "FRA"
+        )
+        bounou = watcher.MatchPlayer(
+            "3", "Yassine Bounou", "Y. Bounou", "1", "Morocco", "MAR", "G"
+        )
+        return {
+            "kylian mbappé": mbappe,
+            "ousmane dembélé": dembele,
+            "yassine bounou": bounou,
+        }
+
+    def test_core_facts_are_present_for_representative_events_in_all_styles(self):
+        cases = [
+            (
+                "goal",
+                {
+                    "time": {"displayValue": "32'"},
+                    "text": "Goal! France 1, Morocco 0. Kylian Mbappé scores.",
+                    "play": {
+                        "type": {"type": "goal"},
+                        "team": {"displayName": "France"},
+                        "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+                    },
+                },
+                ("姆巴佩", "进"),
+                ("法国", "姆巴佩", "进球"),
+                "in",
+            ),
+            (
+                "penalty",
+                {
+                    "time": {"displayValue": "41'"},
+                    "text": "Penalty scored. France. Kylian Mbappé scores.",
+                    "play": {
+                        "type": {"type": "penalty---scored"},
+                        "team": {"displayName": "France"},
+                        "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+                    },
+                },
+                ("姆巴佩", "点球", "命中"),
+                ("法国", "姆巴佩", "点球", "命中"),
+                "in",
+            ),
+            (
+                "red",
+                {
+                    "time": {"displayValue": "55'"},
+                    "text": "Kylian Mbappé (France) is shown the red card.",
+                    "play": {
+                        "type": {"type": "red-card"},
+                        "team": {"displayName": "France"},
+                        "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+                    },
+                },
+                ("姆巴佩", "罚下"),
+                ("法国", "姆巴佩", "红牌"),
+                "in",
+            ),
+            (
+                "substitution",
+                {
+                    "time": {"displayValue": "66'"},
+                    "text": "Substitution, France. Ousmane Dembélé replaces Kylian Mbappé.",
+                    "play": {
+                        "type": {"type": "substitution"},
+                        "team": {"displayName": "France"},
+                        "participants": [
+                            {"athlete": {"displayName": "Ousmane Dembélé"}},
+                            {"athlete": {"displayName": "Kylian Mbappé"}},
+                        ],
+                    },
+                },
+                ("登贝莱", "姆巴佩"),
+                ("法国", "换人", "登贝莱", "姆巴佩"),
+                "in",
+            ),
+            (
+                "save",
+                {
+                    "time": {"displayValue": "71'"},
+                    "text": (
+                        "Attempt saved. Kylian Mbappé (France) right footed shot from "
+                        "the centre of the box is saved by Yassine Bounou (Morocco)."
+                    ),
+                    "play": {
+                        "type": {"type": "shot-on-target"},
+                        "team": {"displayName": "France"},
+                        "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+                    },
+                },
+                ("姆巴佩", "布努", "扑"),
+                ("法国", "姆巴佩", "布努", "扑出"),
+                "in",
+            ),
+            (
+                "final",
+                {
+                    "time": {"displayValue": "90+5'"},
+                    "text": "Match ends, France 1, Morocco 0.",
+                    "play": {"type": {"type": "full-time"}},
+                },
+                ("结束",),
+                ("比赛结束",),
+                "post",
+            ),
+        ]
+
+        for style in ("casual", "balanced", "professional"):
+            for name, item, expected_terms, balloon_terms, status in cases:
+                config = espn_config()
+                config.commentary_style = style
+                snapshot = match_snapshot(
+                    [item],
+                    status=status,
+                    players=self._players(),
+                )
+                alert = watcher.alert_for_espn_commentary(item, snapshot, config)
+                with self.subTest(style=style, event=name):
+                    self.assertIsNotNone(alert)
+                    self.assertTrue(alert.speech.startswith("第"))
+                    self.assertIn("现在法国1比0摩洛哥", alert.speech)
+                    self.assertIn("FRA 1-0 MAR", alert.balloon)
+                    self.assertTrue(alert.balloon.startswith(item["time"]["displayValue"]))
+                    for term in expected_terms:
+                        self.assertIn(term, alert.speech)
+                    for term in balloon_terms:
+                        self.assertIn(term, alert.balloon)
+
+    def test_style_changes_only_text_not_goal_behavior(self):
+        item = {
+            "time": {"displayValue": "32'"},
+            "text": "Goal! France. Kylian Mbappé scores.",
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        behavior = []
+        balloons = []
+        speeches = []
+        for style in ("casual", "balanced", "professional"):
+            config = espn_config()
+            config.commentary_style = style
+            alert = watcher.alert_for_espn_commentary(
+                item,
+                match_snapshot([item], players=self._players()),
+                config,
+            )
+            behavior.append(
+                (
+                    alert.kind,
+                    alert.priority,
+                    alert.face,
+                    alert.clip_id,
+                    alert.light_rgb,
+                    alert.celebration,
+                    alert.prefer_dynamic_voice,
+                )
+            )
+            balloons.append(alert.balloon)
+            speeches.append(alert.speech)
+
+        self.assertEqual(len(set(behavior)), 1)
+        self.assertEqual(len(set(balloons)), 1)
+        self.assertEqual(len(set(speeches)), 3)
+
+    def test_professional_goal_and_save_use_only_reliably_parsed_details(self):
+        players = self._players()
+        goal = {
+            "time": {"displayValue": "32'"},
+            "text": (
+                "Goal! Kylian Mbappé (France) header from the centre of the box to the "
+                "bottom right corner. Assisted by Ousmane Dembélé with a cross."
+            ),
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [
+                    {"athlete": {"displayName": "Kylian Mbappé"}},
+                    {"athlete": {"displayName": "Ousmane Dembélé"}},
+                ],
+            },
+        }
+        saved = {
+            "time": {"displayValue": "73'"},
+            "text": (
+                "Attempt saved. Kylian Mbappé (France) right footed low shot from the centre "
+                "of the box towards the bottom right corner is saved by Yassine Bounou."
+            ),
+            "play": {
+                "type": {"type": "shot-on-target"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        config = espn_config()
+        config.commentary_style = "professional"
+        snapshot = match_snapshot([goal, saved], players=players)
+
+        facts = watcher.parse_espn_event_facts(goal, snapshot, config)
+        goal_alert = watcher.alert_for_espn_commentary(goal, snapshot, config)
+        save_alert = watcher.alert_for_espn_commentary(saved, snapshot, config)
+
+        self.assertEqual(facts.delivery, "cross")
+        self.assertEqual(facts.shot_body_part, "header")
+        self.assertEqual(facts.shot_area, "centre_of_box")
+        self.assertEqual(facts.shot_direction, "bottom_right")
+        self.assertIn("登贝莱传中助攻", goal_alert.speech)
+        self.assertIn("姆巴佩在禁区中路头球攻门", goal_alert.speech)
+        self.assertIn("球门右下角", goal_alert.speech)
+        self.assertIn("布努", save_alert.speech)
+        self.assertIn("右脚低射", save_alert.speech)
+        self.assertIn("射门攻向球门右下角", save_alert.speech)
+        self.assertNotIn("Assisted by", goal_alert.speech)
+        self.assertLess(goal_alert.speech.index("取得进球"), goal_alert.speech.index("传中助攻"))
+        self.assertLess(goal_alert.speech.index("现在法国1比0摩洛哥"), goal_alert.speech.index("传中助攻"))
+        self.assertLess(save_alert.speech.index("现在法国1比0摩洛哥"), save_alert.speech.index("射门攻向"))
+        self.assertGreater(len(goal_alert.speech), len(goal_alert.balloon))
+
+    def test_professional_goal_identifies_explicit_far_post_equalizer(self):
+        item = {
+            "time": {"displayValue": "83'"},
+            "text": (
+                "Goal! Kylian Mbappé (France) header at the far post to the bottom left corner."
+            ),
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        config = espn_config()
+        config.commentary_style = "professional"
+        snapshot = match_snapshot(
+            [item],
+            home_score="1",
+            away_score="1",
+            players=self._players(),
+        )
+
+        facts = watcher.parse_espn_event_facts(item, snapshot, config)
+        alert = watcher.alert_for_espn_commentary(item, snapshot, config)
+
+        self.assertTrue(facts.is_equalizer)
+        self.assertEqual(facts.shot_area, "far_post")
+        self.assertIn("扳平比分", alert.speech)
+        self.assertIn("后点包抄", alert.speech)
+        self.assertIn("现在法国1比1摩洛哥", alert.speech)
+
+    def test_professional_ignores_unrecognized_prose_instead_of_guessing(self):
+        item = {
+            "time": {"displayValue": "20'"},
+            "text": "Goal! France. Kylian Mbappé finishes a wonderful move in style.",
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        config = espn_config()
+        config.commentary_style = "professional"
+
+        alert = watcher.alert_for_espn_commentary(
+            item,
+            match_snapshot([item], players=self._players()),
+            config,
+        )
+
+        for guessed_detail in ("头球", "左脚", "右脚", "低射", "禁区中路", "助攻"):
+            self.assertNotIn(guessed_detail, alert.speech)
+        self.assertNotIn("wonderful move", alert.speech)
+
+    def test_professional_card_and_miss_do_not_infer_unstated_reasons_or_closeness(self):
+        config = espn_config()
+        config.commentary_style = "professional"
+        yellow = {
+            "time": {"displayValue": "18'"},
+            "text": "Kylian Mbappé (France) is shown the yellow card.",
+            "play": {
+                "type": {"type": "yellow-card"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        ordinary_miss = {
+            "time": {"displayValue": "22'"},
+            "text": (
+                "Attempt missed. Kylian Mbappé left footed shot from the centre of the "
+                "box misses to the left."
+            ),
+            "play": {
+                "type": {"type": "shot-off-target"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        close_miss = {
+            **ordinary_miss,
+            "time": {"displayValue": "24'"},
+            "text": ordinary_miss["text"].replace("misses to the left", "is close but misses to the left"),
+        }
+        snapshot = match_snapshot(
+            [yellow, ordinary_miss, close_miss],
+            players=self._players(),
+        )
+
+        yellow_alert = watcher.alert_for_espn_commentary(yellow, snapshot, config)
+        ordinary_alert = watcher.alert_for_espn_commentary(ordinary_miss, snapshot, config)
+        close_alert = watcher.alert_for_espn_commentary(close_miss, snapshot, config)
+
+        self.assertIn("黄牌警告", yellow_alert.speech)
+        self.assertNotIn("犯规", yellow_alert.speech)
+        self.assertIn("射偏", ordinary_alert.speech)
+        self.assertNotIn("稍稍偏出", ordinary_alert.speech)
+        self.assertIn("稍稍偏出", close_alert.speech)
+
+    def test_player_name_switch_is_honored_in_styled_templates(self):
+        item = {
+            "time": {"displayValue": "32'"},
+            "text": "Goal! France. Kylian Mbappé scores.",
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        for style in ("casual", "professional"):
+            config = espn_config()
+            config.commentary_style = style
+            config.announce_player_names = False
+            alert = watcher.alert_for_espn_commentary(
+                item,
+                match_snapshot([item], players=self._players()),
+                config,
+            )
+            with self.subTest(style=style):
+                self.assertNotIn("姆巴佩", alert.speech)
+                self.assertIn("法国", alert.speech)
+
+    def test_professional_substitution_core_and_score_precede_injury_reason(self):
+        item = {
+            "time": {"displayValue": "77'"},
+            "text": (
+                "Substitution, France. Ousmane Dembélé replaces Kylian Mbappé "
+                "because of an injury."
+            ),
+            "play": {
+                "type": {"type": "substitution"},
+                "team": {"displayName": "France"},
+                "participants": [
+                    {"athlete": {"displayName": "Ousmane Dembélé"}},
+                    {"athlete": {"displayName": "Kylian Mbappé"}},
+                ],
+            },
+        }
+        config = espn_config()
+        config.commentary_style = "professional"
+        alert = watcher.alert_for_espn_commentary(
+            item,
+            match_snapshot([item], players=self._players()),
+            config,
+        )
+
+        self.assertLess(alert.speech.index("完成换人"), alert.speech.index("现在法国1比0摩洛哥"))
+        self.assertLess(alert.speech.index("现在法国1比0摩洛哥"), alert.speech.index("受伤"))
+
+    def test_chinese_substitution_balloon_finishes_before_default_hide(self):
+        mateta = watcher.MatchPlayer(
+            "4", "Jean-Philippe Mateta", "J. Mateta", "15", "France", "FRA"
+        )
+        mbappe = self._players()["kylian mbappé"]
+        item = {
+            "time": {"displayValue": "77'"},
+            "text": "Substitution, France. Jean-Philippe Mateta replaces Kylian Mbappé.",
+            "play": {
+                "type": {"type": "substitution"},
+                "team": {"displayName": "France"},
+                "participants": [
+                    {"athlete": {"displayName": "Jean-Philippe Mateta"}},
+                    {"athlete": {"displayName": "Kylian Mbappé"}},
+                ],
+            },
+        }
+        alert = watcher.alert_for_espn_commentary(
+            item,
+            match_snapshot(
+                [item],
+                players={"jean-philippe mateta": mateta, "kylian mbappé": mbappe},
+            ),
+            espn_config(),
+        )
+
+        for fact in ("77'", "法国", "Mateta", "姆巴佩", "FRA 1-0 MAR"):
+            self.assertIn(fact, alert.balloon)
+        estimated_width_px = sum(
+            24 if "\u3400" <= character <= "\u9fff" else 11.1
+            for character in alert.balloon
+        )
+        estimated_marquee_seconds = 1.4 + max(0, estimated_width_px - 248) / 42
+        self.assertLessEqual(estimated_marquee_seconds, 8)
+
+    def test_style_switch_is_immediate_without_replaying_seen_events(self):
+        first = {
+            "sequence": 1,
+            "time": {"displayValue": "10'"},
+            "text": "Goal! France. Kylian Mbappé scores.",
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        second = {
+            **first,
+            "sequence": 2,
+            "time": {"displayValue": "12'"},
+        }
+        config = espn_config()
+        config.commentary_style = "professional"
+        state = watcher.ESPNState(initialized=True, last_status_state="in")
+        snapshot = match_snapshot([first], players=self._players())
+
+        first_alerts = watcher.evaluate_espn_match(snapshot, config, state)
+        config.commentary_style = "casual"
+        second_alerts = watcher.evaluate_espn_match(
+            match_snapshot([first, second], players=self._players()),
+            config,
+            state,
+        )
+
+        self.assertEqual(len(first_alerts), 1)
+        self.assertEqual(len(second_alerts), 1)
+        self.assertIn("家人们", second_alerts[0].speech)
+        self.assertTrue(second_alerts[0].speech.startswith("第12分钟"))
+
+    def test_status_fallback_uses_explicit_snapshot_clock(self):
+        config = espn_config()
+        config.commentary_style = "professional"
+
+        alert = watcher._status_change_alert(match_snapshot(status="in"), config)
+
+        self.assertTrue(alert.speech.startswith("第32分钟"))
+        self.assertTrue(alert.balloon.startswith("32'"))
+        self.assertIn("FRA 1-0 MAR", alert.balloon)
+
+
 class EnglishAlertTests(unittest.TestCase):
     def test_player_number_is_grammatical_inside_possessive_templates(self):
         player = watcher.MatchPlayer(
@@ -728,6 +1339,127 @@ class EnglishAlertTests(unittest.TestCase):
             watcher.player_announcement(english_espn_config(), player),
             "number 4 Dayot Upamecano",
         )
+
+    def test_professional_goal_and_save_have_natural_english_sentences(self):
+        mbappe = watcher.MatchPlayer(
+            "1", "Kylian Mbappé", "K. Mbappé", "10", "France", "FRA"
+        )
+        dembele = watcher.MatchPlayer(
+            "2", "Ousmane Dembélé", "O. Dembélé", "11", "France", "FRA"
+        )
+        bounou = watcher.MatchPlayer(
+            "3", "Yassine Bounou", "Y. Bounou", "1", "Morocco", "MAR", "G"
+        )
+        players = {
+            "kylian mbappé": mbappe,
+            "ousmane dembélé": dembele,
+            "yassine bounou": bounou,
+        }
+        goal = {
+            "time": {"displayValue": "32'"},
+            "text": (
+                "Goal! Kylian Mbappé right footed shot from the centre of the box to "
+                "the top left corner. Assisted by Ousmane Dembélé with a cross."
+            ),
+            "play": {
+                "type": {"type": "goal"},
+                "team": {"displayName": "France"},
+                "participants": [
+                    {"athlete": {"displayName": "Kylian Mbappé"}},
+                    {"athlete": {"displayName": "Ousmane Dembélé"}},
+                ],
+            },
+        }
+        saved = {
+            "time": {"displayValue": "38'"},
+            "text": (
+                "Attempt saved. Kylian Mbappé right footed shot from the centre of the "
+                "box is saved by Yassine Bounou."
+            ),
+            "play": {
+                "type": {"type": "shot-on-target"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        config = english_espn_config()
+        config.commentary_style = "professional"
+        snapshot = match_snapshot([goal, saved], players=players)
+
+        goal_alert = watcher.alert_for_espn_commentary(goal, snapshot, config)
+        save_alert = watcher.alert_for_espn_commentary(saved, snapshot, config)
+
+        self.assertIn("Ousmane Dembele supplies the assist with a cross.", goal_alert.speech)
+        self.assertIn("The finish is a right-footed shot from the centre of the box.", goal_alert.speech)
+        self.assertIn("tries a right-footed shot from the centre of the box", save_alert.speech)
+        self.assertNotIn("Dembelesupplies", goal_alert.speech)
+        self.assertNotIn("'s a right-footed", save_alert.speech)
+        self.assertNotIn("Assisted by", goal_alert.speech)
+
+    def test_english_substitution_balloon_is_compact_but_complete(self):
+        mateta = watcher.MatchPlayer(
+            "4", "Jean-Philippe Mateta", "J. Mateta", "15", "France", "FRA"
+        )
+        mbappe = watcher.MatchPlayer(
+            "1", "Kylian Mbappé", "K. Mbappé", "10", "France", "FRA"
+        )
+        item = {
+            "time": {"displayValue": "77'"},
+            "text": "Substitution, France. Jean-Philippe Mateta replaces Kylian Mbappé.",
+            "play": {
+                "type": {"type": "substitution"},
+                "team": {"displayName": "France"},
+                "participants": [
+                    {"athlete": {"displayName": "Jean-Philippe Mateta"}},
+                    {"athlete": {"displayName": "Kylian Mbappé"}},
+                ],
+            },
+        }
+        config = english_espn_config()
+        alert = watcher.alert_for_espn_commentary(
+            item,
+            match_snapshot(
+                [item],
+                players={"jean-philippe mateta": mateta, "kylian mbappé": mbappe},
+            ),
+            config,
+        )
+
+        self.assertLessEqual(len(alert.balloon), 72)
+        for fact in ("77'", "FRA", "Mateta", "Mbappe", "FRA 1-0 MAR"):
+            self.assertIn(fact, alert.balloon)
+        estimated_width_px = len(alert.balloon) * 11.1
+        estimated_marquee_seconds = 1.4 + max(0, estimated_width_px - 248) / 42
+        self.assertLessEqual(estimated_marquee_seconds, 8)
+
+    def test_styled_penalty_save_uses_player_possessive_not_team_possessive(self):
+        mbappe = watcher.MatchPlayer(
+            "1", "Kylian Mbappé", "K. Mbappé", "10", "France", "FRA"
+        )
+        bounou = watcher.MatchPlayer(
+            "3", "Yassine Bounou", "Y. Bounou", "1", "Morocco", "MAR", "G"
+        )
+        item = {
+            "time": {"displayValue": "81'"},
+            "text": "Penalty saved. Kylian Mbappé is denied by Yassine Bounou.",
+            "play": {
+                "type": {"type": "penalty---saved"},
+                "team": {"displayName": "France"},
+                "participants": [{"athlete": {"displayName": "Kylian Mbappé"}}],
+            },
+        }
+        snapshot = match_snapshot(
+            [item],
+            players={"kylian mbappé": mbappe, "yassine bounou": bounou},
+        )
+
+        for style in ("casual", "professional"):
+            config = english_espn_config()
+            config.commentary_style = style
+            alert = watcher.alert_for_espn_commentary(item, snapshot, config)
+            with self.subTest(style=style):
+                self.assertIn("Yassine Bounou saves Kylian Mbappe's penalty", alert.speech)
+                self.assertNotIn("France's penalty", alert.speech)
 
     def test_free_kick_without_location_has_clean_spacing(self):
         item = {
@@ -747,11 +1479,11 @@ class EnglishAlertTests(unittest.TestCase):
 
         self.assertEqual(
             alert.balloon,
-            "Free kick to Morocco | France 1-0 Morocco",
+            "MAR free kick | FRA 1-0 MAR",
         )
         self.assertEqual(
             alert.speech,
-            "Free kick to Morocco. The player draws the foul.",
+            "Free kick to Morocco. The player draws the foul. It is France 1, Morocco 0.",
         )
 
     def test_representative_event_catalog_has_no_hardcoded_chinese(self):
@@ -1098,6 +1830,121 @@ class MarketAlertTests(unittest.TestCase):
         signal = next(alert for alert in alerts if alert.kind == "market_goal_signal")
         self.assertFalse(contains_han(signal.balloon))
         self.assertFalse(contains_han(signal.speech))
+
+    def test_market_price_move_uses_three_distinct_voice_styles(self):
+        snapshot = watcher.MarketSnapshot(
+            "FRA", "法国晋级", "active", "E", 75, 77, 23, 25, 76, "", None
+        )
+        speeches = {}
+        for style in ("casual", "balanced", "professional"):
+            market = watcher.MarketConfig(
+                "FRA",
+                "法国晋级",
+                commentary_style=style,
+                speak_move_cents=5,
+            )
+            speeches[style] = watcher.speech_for_price_move(snapshot, market, 6, 76)
+
+        self.assertEqual(len(set(speeches.values())), 3)
+        self.assertIn("家人们", speeches["casual"])
+        self.assertIn("中间价现报", speeches["professional"])
+        for speech in speeches.values():
+            self.assertIn("法国晋级", speech)
+            self.assertIn("76", speech)
+            self.assertIn("6", speech)
+
+    def test_suspected_goal_styles_name_team_both_directions_and_keep_uncertainty(self):
+        for style in ("casual", "balanced", "professional"):
+            for rising, midpoint, expected_team in (
+                (True, 60, "法国"),
+                (False, 40, "摩洛哥"),
+            ):
+                market = watcher.MarketConfig(
+                    "FRA",
+                    "法国晋级",
+                    commentary_style=style,
+                    min_seconds_between_alerts=0,
+                    goal_signal_enabled=True,
+                    goal_signal_move_cents=5,
+                    goal_signal_cooldown_seconds=1,
+                    goal_signal_up_team="法国",
+                    goal_signal_down_team="摩洛哥",
+                    # Deliberately unsafe legacy custom strings verify that
+                    # balanced also restores the mandatory uncertainty.
+                    goal_signal_up_speech="法国进球了！",
+                    goal_signal_down_speech="摩洛哥进球了！",
+                )
+                snapshot = watcher.MarketSnapshot(
+                    "FRA",
+                    "法国晋级",
+                    "active",
+                    "E",
+                    midpoint - 1,
+                    midpoint + 1,
+                    100 - midpoint - 1,
+                    100 - midpoint + 1,
+                    midpoint,
+                    "",
+                    None,
+                )
+                state = watcher.MarketState(last_observed_mid_cents=50)
+
+                alerts = watcher.evaluate_market(
+                    snapshot,
+                    market,
+                    state,
+                    datetime.now(timezone.utc),
+                )
+                signal = next(alert for alert in alerts if alert.kind == "market_goal_signal")
+
+                with self.subTest(style=style, rising=rising):
+                    self.assertIn(expected_team, signal.speech)
+                    self.assertIn(expected_team, signal.balloon)
+                    self.assertTrue("疑似" in signal.speech or "可能" in signal.speech)
+                    self.assertIn("确认", signal.speech)
+                    self.assertNotIn("进球了", signal.speech)
+                    self.assertIn("疑似", signal.balloon)
+                    self.assertIn("等待确认", signal.balloon)
+
+    def test_unsafe_english_custom_goal_claim_is_replaced_with_uncertainty(self):
+        market = watcher.MarketConfig(
+            "FRA",
+            "France to advance",
+            language="en",
+            commentary_style="balanced",
+            goal_signal_down_team="Morocco",
+            goal_signal_down_speech=(
+                "Possible market overreaction—Morocco scored; "
+                "awaiting commentary confirmation."
+            ),
+        )
+        snapshot = watcher.MarketSnapshot(
+            "FRA", "France to advance", "active", "E", 39, 41, 59, 61, 40, "", None
+        )
+
+        speech = watcher.speech_for_market_goal_signal(snapshot, market, False, -10, 40)
+
+        self.assertNotIn("Morocco scored", speech)
+        self.assertIn("possible goal for Morocco", speech)
+        self.assertIn("awaiting commentary confirmation", speech)
+
+    def test_mixed_chinese_confirmation_and_uncertainty_is_replaced(self):
+        market = watcher.MarketConfig(
+            "FRA",
+            "法国晋级",
+            commentary_style="balanced",
+            goal_signal_up_team="法国",
+            goal_signal_up_speech="可能只是盘口误判，法国进球了，等待文字直播确认。",
+        )
+        snapshot = watcher.MarketSnapshot(
+            "FRA", "法国晋级", "active", "E", 59, 61, 39, 41, 60, "", None
+        )
+
+        speech = watcher.speech_for_market_goal_signal(snapshot, market, True, 10, 60)
+
+        self.assertNotIn("法国进球了", speech)
+        self.assertIn("法国疑似进球", speech)
+        self.assertIn("等待文字直播确认", speech)
 
     def test_inactive_market_freezes_last_trade_without_goal_signal(self):
         market = watcher.MarketConfig(

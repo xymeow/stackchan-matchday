@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,16 @@ from stackchan_i18n import SUPPORTED_LANGUAGES, localized_pair, normalize_langua
 
 REQUEST_TIMEOUT_SECONDS = 12
 DEFAULT_SETUP_PORT = 8788
+DEFAULT_COMMENTARY_STYLE = "balanced"
+COMMENTARY_STYLES = frozenset({"casual", "balanced", "professional"})
+
+
+def normalize_commentary_style(value: Any) -> str:
+    style = str(DEFAULT_COMMENTARY_STYLE if value is None else value).strip().lower()
+    if style not in COMMENTARY_STYLES:
+        choices = ", ".join(sorted(COMMENTARY_STYLES))
+        raise ValueError(f"espn.commentary_style must be one of: {choices}")
+    return style
 
 
 TEAM_METADATA: dict[str, tuple[str, str, str]] = {
@@ -252,6 +263,17 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def serialized_config_mutation(method):
+    """Serialize complete config read-modify-write transactions."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._config_mutation_lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class MatchSetupService:
     def __init__(
         self,
@@ -274,7 +296,9 @@ class MatchSetupService:
         self.language = normalize_language(language)
         self.setup_url = ""
         self._lock = threading.Lock()
+        self._config_mutation_lock = threading.RLock()
         self._reload_requested = threading.Event()
+        self._commentary_style_update: str | None = None
         self._upcoming_cache: list[dict[str, Any]] = []
         self._upcoming_cached_at = 0.0
         self._options_cache: list[dict[str, Any]] = []
@@ -285,6 +309,14 @@ class MatchSetupService:
             return False
         self._reload_requested.clear()
         return True
+
+    def take_commentary_style_update(self) -> str | None:
+        """Return a live style update without requesting a full watcher reload."""
+
+        with self._lock:
+            style = self._commentary_style_update
+            self._commentary_style_update = None
+        return style
 
     def upcoming_matches(self, force: bool = False) -> list[dict[str, Any]]:
         with self._lock:
@@ -425,6 +457,9 @@ class MatchSetupService:
         return {
             "setup_url": self.setup_url,
             "language": language,
+            "commentary_style": normalize_commentary_style(
+                espn.get("commentary_style", DEFAULT_COMMENTARY_STYLE)
+            ),
             "kalshi_url": str((raw.get("setup_server") or {}).get("last_kalshi_url") or ""),
             "event_id": str(espn.get("event_id") or ""),
             "label": resolve_text(espn.get("label"), language, path="espn.label"),
@@ -465,8 +500,30 @@ class MatchSetupService:
             },
         }
 
+    @serialized_config_mutation
+    def apply_commentary_style(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist and signal a style-only update without resetting match state."""
+
+        requested = payload.get("commentary_style")
+        if not isinstance(requested, str) or not requested.strip():
+            raise ValueError("commentary_style is required")
+        style = normalize_commentary_style(requested)
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw.setdefault("espn", {})["commentary_style"] = style
+        atomic_write_json(self.config_path, raw)
+        with self._lock:
+            self._commentary_style_update = style
+        return {"ok": True, "commentary_style": style}
+
+    @serialized_config_mutation
     def apply_selection(self, payload: dict[str, Any]) -> dict[str, Any]:
         language = normalize_language(payload.get("language", self.language), path="language")
+        requested_style = payload.get("commentary_style")
+        commentary_style = (
+            normalize_commentary_style(requested_style)
+            if requested_style is not None
+            else ""
+        )
         kalshi_value = str(payload.get("kalshi_url") or payload.get("event_ticker") or "")
         event_ticker = extract_kalshi_event_ticker(kalshi_value)
         event, markets = self._kalshi_event(event_ticker)
@@ -493,6 +550,10 @@ class MatchSetupService:
             raise ValueError("持仓球队不属于这场比赛")
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        if not commentary_style:
+            commentary_style = normalize_commentary_style(
+                (raw.get("espn") or {}).get("commentary_style", DEFAULT_COMMENTARY_STYLE)
+            )
         raw["language"] = language
         existing_markets = raw.get("markets") or []
         market_defaults = dict(existing_markets[0]) if existing_markets else {}
@@ -527,6 +588,7 @@ class MatchSetupService:
                 "starts_at": match["starts_at"],
                 "favorite_team": favorite_team,
                 "position_team": position_team,
+                "commentary_style": commentary_style,
             }
         )
         team_names = espn.setdefault("team_names", {})
@@ -579,11 +641,21 @@ class MatchSetupService:
                                 "Waiting for commentary confirmation."
                             ),
                         ),
+                        "goal_signal_up_team": localized_pair(
+                            localized[0],
+                            english[0],
+                        ),
+                        "goal_signal_down_team": localized_pair(
+                            localized[1],
+                            english[1],
+                        ),
                     }
                 )
             else:
                 configured.pop("goal_signal_up_speech", None)
                 configured.pop("goal_signal_down_speech", None)
+                configured.pop("goal_signal_up_team", None)
+                configured.pop("goal_signal_down_team", None)
                 configured["goal_signal_enabled"] = False
             configured_markets.append(configured)
         raw["markets"] = configured_markets
@@ -601,6 +673,7 @@ class MatchSetupService:
         return {
             "ok": True,
             "language": language,
+            "commentary_style": commentary_style,
             "label": resolve_text(espn["label"], language, path="espn.label"),
             "label_i18n": {
                 lang: resolve_text(espn["label"], lang, path="espn.label")
@@ -612,6 +685,7 @@ class MatchSetupService:
             "starts_at": match["starts_at"],
         }
 
+    @serialized_config_mutation
     def apply_market_selection(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Watch an arbitrary Kalshi event without an ESPN pairing.
 
@@ -621,6 +695,12 @@ class MatchSetupService:
         team flags nor a matching fixture.
         """
         language = normalize_language(payload.get("language", self.language), path="language")
+        requested_style = payload.get("commentary_style")
+        commentary_style = (
+            normalize_commentary_style(requested_style)
+            if requested_style is not None
+            else ""
+        )
         kalshi_value = str(payload.get("kalshi_url") or payload.get("event_ticker") or "").strip()
         event_ticker = extract_kalshi_event_ticker(kalshi_value)
         if not event_ticker:
@@ -639,6 +719,10 @@ class MatchSetupService:
         event_title = str(event.get("title") or event.get("sub_title") or event_ticker)
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        if not commentary_style:
+            commentary_style = normalize_commentary_style(
+                (raw.get("espn") or {}).get("commentary_style", DEFAULT_COMMENTARY_STYLE)
+            )
         raw["language"] = language
         existing_markets = raw.get("markets") or []
         market_defaults = dict(existing_markets[0]) if existing_markets else {}
@@ -648,6 +732,8 @@ class MatchSetupService:
             configured = dict(market_defaults)
             configured.pop("goal_signal_up_speech", None)
             configured.pop("goal_signal_down_speech", None)
+            configured.pop("goal_signal_up_team", None)
+            configured.pop("goal_signal_down_team", None)
             label = str(
                 market.get("yes_sub_title")
                 or market.get("subtitle")
@@ -668,7 +754,9 @@ class MatchSetupService:
         raw["markets"] = configured_markets
         raw["ticker_enabled"] = True
         raw.setdefault("probability_bar", {})["enabled"] = False
-        raw.setdefault("espn", {})["enabled"] = False
+        espn = raw.setdefault("espn", {})
+        espn["enabled"] = False
+        espn["commentary_style"] = commentary_style
 
         setup = raw.setdefault("setup_server", {})
         setup["last_kalshi_url"] = kalshi_value
@@ -683,6 +771,7 @@ class MatchSetupService:
         return {
             "ok": True,
             "language": language,
+            "commentary_style": commentary_style,
             "label": event_title,
             "label_i18n": {lang: event_title for lang in SUPPORTED_LANGUAGES},
             "event_id": "",
@@ -699,6 +788,7 @@ class MatchSetupService:
             return ""
         return str((raw.get("setup_server") or {}).get("last_daily_prompt") or "")
 
+    @serialized_config_mutation
     def record_daily_prompt(self, day: str) -> None:
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
         setup = raw.setdefault("setup_server", {})
@@ -743,6 +833,7 @@ def setup_page_html() -> str:
 <main>
   <header><h1>Stack-chan 赛前设置</h1><div class="status" id="health">连接中</div></header>
   <section><h2>播报语言 / Commentary language</h2><div class="segment two" id="language"><label><input type="radio" name="language" value="zh" checked><span>中文</span></label><label><input type="radio" name="language" value="en"><span>English</span></label></div><div class="hint">选择比赛并点“开始看球”后生效</div></section>
+  <section><h2>播报语气</h2><div class="segment" id="commentary-style"><label><input type="radio" name="commentary_style" value="casual"><span>朋友陪看</span></label><label><input type="radio" name="commentary_style" value="balanced" checked><span>自然播报</span></label><label><input type="radio" name="commentary_style" value="professional"><span>专业解说</span></label></div><div class="hint" id="style-effective">当前生效：自然播报</div><div class="hint">可在比赛中即时切换，不会重播旧事件</div></section>
   <section><h2>未来比赛</h2><div class="matches" id="matches"><div class="empty">正在读取赛程</div></div></section>
   <section>
     <h2>盘口与直播</h2>
@@ -762,6 +853,9 @@ def setup_page_html() -> str:
 <script>
 const state={selectedEventId:'',resolved:null};
 const $=id=>document.getElementById(id);
+const selectedStyle=()=>document.querySelector('input[name="commentary_style"]:checked')?.value||'balanced';
+const styleNames={casual:'朋友陪看',balanced:'自然播报',professional:'专业解说'};
+function showEffectiveStyle(style){$('style-effective').textContent=`当前生效：${styleNames[style]||styleNames.balanced}`}
 const localTime=value=>new Intl.DateTimeFormat('zh-CN',{weekday:'short',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(value));
 function setMessage(text,kind=''){const el=$('message');el.textContent=text;el.className='message '+kind}
 function renderMatches(matches){
@@ -775,11 +869,14 @@ function renderResolved(data){state.resolved=data;const english=document.querySe
 async function json(url,options){const response=await fetch(url,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data}
 async function resolveKalshi(){setMessage('正在解析盘口和比赛');try{const data=await json('/api/setup/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value})});renderResolved(data);setMessage('已匹配双方盘口','ok')}catch(error){setMessage(error.message,'error')}}
 async function chooseMatch(match){state.selectedEventId=match.event_id;document.querySelectorAll('.match').forEach(el=>el.classList.toggle('selected',el.dataset.id===match.event_id));if(match.kalshi_event_ticker){$('kalshi').value=match.kalshi_event_ticker;await resolveKalshi()}else if(state.resolved){selectRecommendedEspn()}}
-async function boot(){try{const [status,upcoming]=await Promise.all([json('/api/setup/status'),json('/api/setup/upcoming')]);$('health').textContent='watcher 在线';$('kalshi').value=status.kalshi_url||'';const language=status.language==='en'?'en':'zh';const input=document.querySelector(`input[name="language"][value="${language}"]`);if(input)input.checked=true;$('current').textContent=status.label?`${status.label} · 支持 ${status.favorite_team||'中立'} · 持仓 ${status.position_team||'无'}`:'尚未配置';renderMatches(upcoming.matches)}catch(error){$('health').textContent='连接失败';setMessage(error.message,'error')}}
+async function refreshEffectiveStyle(){try{const status=await json('/api/setup/status');const style=status.commentary_style||'balanced';const input=document.querySelector(`input[name="commentary_style"][value="${style}"]`);if(input)input.checked=true;showEffectiveStyle(style)}catch(_error){}}
+async function boot(){try{const [status,upcoming]=await Promise.all([json('/api/setup/status'),json('/api/setup/upcoming')]);$('health').textContent='watcher 在线';$('kalshi').value=status.kalshi_url||'';const language=status.language==='en'?'en':'zh';const input=document.querySelector(`input[name="language"][value="${language}"]`);if(input)input.checked=true;const style=status.commentary_style||'balanced';const styleInput=document.querySelector(`input[name="commentary_style"][value="${style}"]`);if(styleInput)styleInput.checked=true;showEffectiveStyle(style);$('current').textContent=status.label?`${status.label} · 支持 ${status.favorite_team||'中立'} · 持仓 ${status.position_team||'无'} · ${selectedStyle()}`:'尚未配置';renderMatches(upcoming.matches)}catch(error){$('health').textContent='连接失败';setMessage(error.message,'error')}}
 $('resolve').onclick=resolveKalshi;
 document.querySelectorAll('input[name="language"]').forEach(input=>{input.onchange=()=>{if(state.resolved)renderResolved(state.resolved)}});
-$('apply').onclick=async()=>{const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';const language=document.querySelector('input[name="language"]:checked')?.value||'zh';setMessage('正在切换 watcher');try{const data=await json('/api/setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value,event_ticker:state.resolved.event_ticker,espn_event_id:$('espn').value,favorite_team:favorite,position_team:position,language})});setMessage(`${data.label} 已开始监控`,'ok');$('current').textContent=`${data.label} · 支持 ${favorite||'中立'} · 持仓 ${position||'无'}`}catch(error){setMessage(error.message,'error')}};
+document.querySelectorAll('input[name="commentary_style"]').forEach(input=>{input.onchange=async()=>{try{const data=await json('/api/setup/style',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commentary_style:selectedStyle()})});showEffectiveStyle(data.commentary_style);setMessage(`播报语气已切换为 ${data.commentary_style}`,'ok')}catch(error){setMessage(error.message,'error')}}});
+$('apply').onclick=async()=>{const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';const language=document.querySelector('input[name="language"]:checked')?.value||'zh';const commentary_style=selectedStyle();setMessage('正在切换 watcher');try{const data=await json('/api/setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value,event_ticker:state.resolved.event_ticker,espn_event_id:$('espn').value,favorite_team:favorite,position_team:position,language,commentary_style})});setMessage(`${data.label} 已开始监控`,'ok');$('current').textContent=`${data.label} · 支持 ${favorite||'中立'} · 持仓 ${position||'无'} · ${data.commentary_style}`}catch(error){setMessage(error.message,'error')}};
 boot();
+setInterval(refreshEffectiveStyle,5000);
 </script>
 </body>
 </html>"""
@@ -844,6 +941,9 @@ class SetupRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/setup/apply":
                 self._json(self.service.apply_selection(payload))
+                return
+            if path == "/api/setup/style":
+                self._json(self.service.apply_commentary_style(payload))
                 return
             self._json({"error": "not found"}, 404)
         except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as error:

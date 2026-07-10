@@ -53,6 +53,7 @@
   },
   "espn": {
     "enabled": false,
+    "commentary_style": "balanced",
     "event_id": "760510",
     "league": "fifa.world",
     "label": {
