@@ -26,6 +26,27 @@ from a phone.
 - Optional LAN TTS; visual feedback and tone patterns still work without it.
 - Standalone mode for following up to four active markets without a fixture.
 
+## In action
+
+<table>
+  <tr>
+    <td colspan="2" align="center">
+      <img src="docs/images/photos/matchday-in-action.jpg" alt="Stack-chan following a football match beside a laptop" width="900"><br>
+      <sub>Watching together: Stack-chan follows the same match beside the screen.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="68%">
+      <img src="docs/images/photos/device-probability-bar.jpg" alt="Stack-chan showing Spain at 74 and Belgium at 26" width="560"><br>
+      <sub>Live probability bar on the device</sub>
+    </td>
+    <td align="center" width="32%">
+      <img src="docs/images/photos/phone-setup.jpg" alt="Chinese phone setup page for selecting a match, team, and pregame position" width="200"><br>
+      <sub>Phone setup for the match, team, and manual pregame position</sub>
+    </td>
+  </tr>
+</table>
+
 ## System design
 
 ![Stack-chan Matchday system design](docs/images/system-design.png)
