@@ -39,12 +39,12 @@ from a phone.
   </tr>
   <tr>
     <td align="center" width="68%">
-      <img src="docs/images/photos/device-probability-bar.jpg" alt="Stack-chan showing Spain at 74 and Belgium at 26" width="560"><br>
-      <sub>Live probability bar on the device</sub>
+      <img src="docs/images/photos/device-probability-bar.jpg" alt="Stack-chan showing Spain at 92, the other side at 8, and a Chinese market-move alert" width="560"><br>
+      <sub>Live reaction: a 92–8 split and an on-screen market-move alert.</sub>
     </td>
     <td align="center" width="32%">
-      <img src="docs/images/photos/phone-setup.jpg" alt="Chinese phone setup page for selecting a match, team, and pregame position" width="200"><br>
-      <sub>Phone setup for the match, team, and manual pregame position</sub>
+      <img src="docs/images/photos/phone-setup-en.png" alt="English Stack-chan Match Setup page showing language, commentary style, and upcoming matches" width="200"><br>
+      <sub>English setup page for choosing language, commentary style, and a match.</sub>
     </td>
   </tr>
 </table>
@@ -297,6 +297,19 @@ falls back to short tone patterns.
    `/api/command` (or the control panel's *mute 60m* button) silences a timed
    meeting and announces when sound returns; an indefinite mute survives
    reboots.
+
+<table>
+  <tr>
+    <td align="center" width="38%">
+      <img src="docs/images/photos/scan-setup-qr.jpg" alt="A phone camera scanning the setup QR code displayed on Stack-chan" width="220"><br>
+      <sub>Scan the on-device QR code to open the local setup page (example LAN address shown).</sub>
+    </td>
+    <td align="center" width="62%">
+      <img src="docs/images/photos/head-touch-mute.jpg" alt="A hand holding Stack-chan's top touch bar while the device displays the Chinese mute confirmation" width="380"><br>
+      <sub>Hold the top touch bar to mute speech, tones, motion, and alert lights while visual updates continue.</sub>
+    </td>
+  </tr>
+</table>
 
 Once per local day, the watcher can proactively ask you to scan and choose a
 match. Configure this with `setup_server.daily_prompt_hour` (`-1` disables it),
