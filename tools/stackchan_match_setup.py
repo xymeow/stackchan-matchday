@@ -222,6 +222,20 @@ def event_markets(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     return event, parsed
 
 
+# Standalone (non-fixture) events keep at most this many markets in the ticker.
+STANDALONE_MARKET_LIMIT = 4
+
+
+def general_event_markets(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Like event_markets, but for arbitrary Kalshi events: any market count."""
+    event = payload.get("event") or {}
+    markets = event.get("markets") or payload.get("markets") or []
+    parsed = [market for market in markets if isinstance(market, dict) and market.get("ticker")]
+    if not parsed:
+        raise ValueError("Kalshi 事件没有可用盘口")
+    return event, parsed
+
+
 def match_teams(match: dict[str, Any]) -> set[str]:
     return {
         normalize_team(str(match["home"]["name"])),
@@ -343,6 +357,11 @@ class MatchSetupService:
         query = urllib.parse.urlencode({"with_nested_markets": "true"})
         url = f"{self.kalshi_base_url}/events/{urllib.parse.quote(event_ticker)}?{query}"
         return event_markets(fetch_json(url))
+
+    def _kalshi_event_any(self, event_ticker: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        query = urllib.parse.urlencode({"with_nested_markets": "true"})
+        url = f"{self.kalshi_base_url}/events/{urllib.parse.quote(event_ticker)}?{query}"
+        return general_event_markets(fetch_json(url))
 
     def resolve_kalshi(self, value: str) -> dict[str, Any]:
         event_ticker = extract_kalshi_event_ticker(value)
@@ -592,6 +611,102 @@ class MatchSetupService:
             "position_team": position_team,
             "starts_at": match["starts_at"],
         }
+
+    def apply_market_selection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Watch an arbitrary Kalshi event without an ESPN pairing.
+
+        Configures up to STANDALONE_MARKET_LIMIT of the event's most-traded
+        markets for the legacy text ticker; the probability bar and ESPN
+        commentary are turned off because standalone markets have neither
+        team flags nor a matching fixture.
+        """
+        language = normalize_language(payload.get("language", self.language), path="language")
+        kalshi_value = str(payload.get("kalshi_url") or payload.get("event_ticker") or "").strip()
+        event_ticker = extract_kalshi_event_ticker(kalshi_value)
+        if not event_ticker:
+            raise ValueError("请提供 Kalshi 事件链接或 event ticker")
+        event, markets = self._kalshi_event_any(event_ticker)
+
+        def traded_volume(market: dict[str, Any]) -> float:
+            for key in ("volume_24h", "volume"):
+                try:
+                    return float(market.get(key) or 0)
+                except (TypeError, ValueError):
+                    continue
+            return 0.0
+
+        markets = sorted(markets, key=traded_volume, reverse=True)[:STANDALONE_MARKET_LIMIT]
+        event_title = str(event.get("title") or event.get("sub_title") or event_ticker)
+
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["language"] = language
+        existing_markets = raw.get("markets") or []
+        market_defaults = dict(existing_markets[0]) if existing_markets else {}
+
+        configured_markets: list[dict[str, Any]] = []
+        for market in markets:
+            configured = dict(market_defaults)
+            configured.pop("goal_signal_up_speech", None)
+            configured.pop("goal_signal_down_speech", None)
+            label = str(
+                market.get("yes_sub_title")
+                or market.get("subtitle")
+                or market.get("title")
+                or market["ticker"]
+            )
+            configured.update(
+                {
+                    "ticker": str(market["ticker"]).upper(),
+                    "label": label,
+                    "side_i_care": "yes",
+                    "alerts_enabled": True,
+                    "show_in_ticker": True,
+                    "goal_signal_enabled": False,
+                }
+            )
+            configured_markets.append(configured)
+        raw["markets"] = configured_markets
+        raw["ticker_enabled"] = True
+        raw.setdefault("probability_bar", {})["enabled"] = False
+        raw.setdefault("espn", {})["enabled"] = False
+
+        setup = raw.setdefault("setup_server", {})
+        setup["last_kalshi_url"] = kalshi_value
+        setup["last_event_ticker"] = str(event.get("event_ticker") or event_ticker)
+
+        atomic_write_json(self.config_path, raw)
+        self.language = language
+        with self._lock:
+            self._options_cache = []
+            self._options_cached_at = 0.0
+        self._reload_requested.set()
+        return {
+            "ok": True,
+            "language": language,
+            "label": event_title,
+            "label_i18n": {lang: event_title for lang in SUPPORTED_LANGUAGES},
+            "event_id": "",
+            "favorite_team": "",
+            "position_team": "",
+            "starts_at": "",
+            "markets": [entry["ticker"] for entry in configured_markets],
+        }
+
+    def last_daily_prompt(self) -> str:
+        try:
+            raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return ""
+        return str((raw.get("setup_server") or {}).get("last_daily_prompt") or "")
+
+    def record_daily_prompt(self, day: str) -> None:
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        setup = raw.setdefault("setup_server", {})
+        if setup.get("last_daily_prompt") == day:
+            return
+        setup["last_daily_prompt"] = day
+        # Bookkeeping only: no reload request, nothing semantic changed.
+        atomic_write_json(self.config_path, raw)
 
 
 def setup_page_html() -> str:

@@ -33,7 +33,8 @@
     "kalshi_series_ticker": "KXWCADVANCE",
     "lookahead_days": 10,
     "refresh_seconds": 900,
-    "prompt_minutes_before": 90
+    "prompt_minutes_before": 90,
+    "daily_prompt_hour": 10
   },
   "probability_bar": {
     "enabled": true,

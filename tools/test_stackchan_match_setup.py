@@ -197,5 +197,88 @@ class MatchSetupTests(unittest.TestCase):
         self.assertIn('id="apply"', page)
 
 
+KALSHI_GENERAL_EVENT = {
+    "event": {
+        "event_ticker": "KXPRES-28",
+        "title": "Presidential winner",
+        "markets": [
+            {"ticker": "KXPRES-28-A", "yes_sub_title": "Candidate A", "volume_24h": 500},
+            {"ticker": "KXPRES-28-B", "yes_sub_title": "Candidate B", "volume_24h": 900},
+            {"ticker": "KXPRES-28-C", "yes_sub_title": "Candidate C", "volume_24h": 100},
+            {"ticker": "KXPRES-28-D", "yes_sub_title": "Candidate D", "volume_24h": 50},
+            {"ticker": "KXPRES-28-E", "yes_sub_title": "Candidate E", "volume_24h": 300},
+        ],
+    }
+}
+
+
+class StandaloneMarketTests(unittest.TestCase):
+    def test_apply_market_selection_configures_ticker_only_watch(self):
+        initial = {
+            "ticker_enabled": False,
+            "probability_bar": {"enabled": True, "market_ticker": "OLD"},
+            "espn": {"enabled": True, "event_id": "760511"},
+            "setup_server": {},
+            "markets": [{"ticker": "OLD", "label": "old", "alert_move_cents": 7}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+            with patch.object(
+                instance,
+                "_kalshi_event_any",
+                return_value=setup.general_event_markets(KALSHI_GENERAL_EVENT),
+            ):
+                result = instance.apply_market_selection(
+                    {
+                        "kalshi_url": "https://kalshi.com/markets/KXPRES-28",
+                        "language": "en",
+                    }
+                )
+            updated = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["label"], "Presidential winner")
+        self.assertEqual(result["language"], "en")
+        self.assertEqual(result["event_id"], "")
+        # Top four markets by traded volume, most active first.
+        self.assertEqual(
+            [market["ticker"] for market in updated["markets"]],
+            ["KXPRES-28-B", "KXPRES-28-A", "KXPRES-28-E", "KXPRES-28-C"],
+        )
+        self.assertTrue(all(market["show_in_ticker"] for market in updated["markets"]))
+        self.assertTrue(all(market["alerts_enabled"] for market in updated["markets"]))
+        self.assertFalse(any(market.get("goal_signal_enabled") for market in updated["markets"]))
+        # Defaults inherited from the previous first market entry.
+        self.assertEqual(updated["markets"][0]["alert_move_cents"], 7)
+        self.assertEqual(updated["markets"][0]["label"], "Candidate B")
+        self.assertTrue(updated["ticker_enabled"])
+        self.assertFalse(updated["probability_bar"]["enabled"])
+        self.assertFalse(updated["espn"]["enabled"])
+        self.assertEqual(updated["language"], "en")
+        self.assertEqual(updated["setup_server"]["last_event_ticker"], "KXPRES-28")
+
+    def test_apply_market_selection_rejects_unrecognizable_input(self):
+        instance = service(Path("unused.json"))
+
+        with self.assertRaises(ValueError):
+            instance.apply_market_selection({"kalshi_url": "not a kalshi link"})
+
+    def test_daily_prompt_bookkeeping_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps({"setup_server": {}}), encoding="utf-8")
+            instance = service(path)
+
+            self.assertEqual(instance.last_daily_prompt(), "")
+            instance.record_daily_prompt("2026-07-10")
+            self.assertEqual(instance.last_daily_prompt(), "2026-07-10")
+            instance.record_daily_prompt("2026-07-10")
+            updated = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(updated["setup_server"]["last_daily_prompt"], "2026-07-10")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,10 @@ class SetupServerConfig:
     lookahead_days: int = 10
     refresh_seconds: int = 900
     prompt_minutes_before: int = 90
+    # Local hour (0-23) after which the watcher proactively asks once per day:
+    # "matches today, scan to set one up" or, with no fixtures in the lookahead
+    # window, "want to watch some other Kalshi market?". -1 disables.
+    daily_prompt_hour: int = 10
 
 
 @dataclass
@@ -417,6 +421,7 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         lookahead_days=max(1, min(30, int(setup_raw.get("lookahead_days", 10)))),
         refresh_seconds=max(60, int(setup_raw.get("refresh_seconds", 900))),
         prompt_minutes_before=max(5, int(setup_raw.get("prompt_minutes_before", 90))),
+        daily_prompt_hour=max(-1, min(23, int(setup_raw.get("daily_prompt_hour", 10)))),
     )
 
     adaptive_raw = raw.get("adaptive_polling") or {}
@@ -2344,6 +2349,109 @@ def scheduled_setup_alert(match: dict[str, Any], setup_url: str, language: str =
     )
 
 
+def _local_match_time_text(starts_at: datetime, language: str) -> str:
+    local_start = starts_at.astimezone()
+    if language == "en":
+        month = (
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        )[local_start.month - 1]
+        return f"{month} {local_start.day}, {local_start:%H:%M}"
+    return f"{local_start.month}月{local_start.day}日 {local_start:%H:%M}"
+
+
+def daily_setup_reminder_alert(
+    match: dict[str, Any],
+    match_count: int,
+    setup_url: str,
+    language: str = "zh",
+) -> Alert:
+    starts_at = parse_datetime(match.get("starts_at")) or datetime.now(timezone.utc)
+    time_text = _local_match_time_text(starts_at, language)
+    label = str(match.get("label") or pick(language, "今天的比赛", "today's match"))
+    if language == "en":
+        count_text = "a match" if match_count == 1 else f"{match_count} matches"
+        speech = (
+            f"There is {count_text} today. {label} kicks off at {time_text}, "
+            "and nothing is set up yet. Scan the code to pick a match."
+        )
+    else:
+        count_text = "一场比赛" if match_count == 1 else f"{match_count}场比赛"
+        speech = f"今天有{count_text}。{label}{time_text}开球，还没设置哦。用手机扫码选一场吧。"
+    return Alert(
+        ticker=f"DAILY-SETUP:{match.get('event_id', '')}",
+        label=label,
+        kind="daily_setup",
+        priority=650,
+        face="happy",
+        balloon=f"{label} {time_text} | {setup_url}",
+        speech=speech,
+        detail=f"daily setup reminder for ESPN {match.get('event_id', '')}",
+        prefer_dynamic_voice=True,
+        setup_url=setup_url,
+        source_event_at=starts_at,
+    )
+
+
+def no_fixture_prompt_alert(setup_url: str, lookahead_days: int, language: str = "zh") -> Alert:
+    if language == "en":
+        speech = (
+            f"No matches are scheduled in the next {lookahead_days} days. "
+            "Want to watch something else? Scan the code and paste any Kalshi market link."
+        )
+        balloon = f"No matches — paste a Kalshi link | {setup_url}"
+        label = "No upcoming matches"
+    else:
+        speech = f"未来{lookahead_days}天没有比赛安排。想看点别的吗？手机扫码，把 Kalshi 盘口链接贴给我就行。"
+        balloon = f"没有比赛 · 可贴 Kalshi 链接 | {setup_url}"
+        label = "近期没有比赛"
+    return Alert(
+        ticker="DAILY-DISCOVER",
+        label=label,
+        kind="daily_discover",
+        priority=600,
+        face="neutral",
+        balloon=balloon,
+        speech=speech,
+        detail="daily discovery prompt (no upcoming fixtures)",
+        prefer_dynamic_voice=True,
+        setup_url=setup_url,
+    )
+
+
+def choose_daily_prompt(
+    upcoming: list[dict[str, Any]],
+    config: WatchConfig,
+    setup_url: str,
+    now_local: datetime | None = None,
+) -> Alert | None:
+    """Pick today's proactive prompt, or None when nothing needs asking.
+
+    - Fixtures kick off today and none of them is the configured match:
+      remind the user to set one up over the phone page.
+    - No fixtures at all within the lookahead window: ask whether to watch
+      some other Kalshi market instead (pasted on the phone page).
+    - Otherwise (match already configured, or fixtures only on later days):
+      stay quiet.
+    """
+    local_now = now_local or datetime.now().astimezone()
+    todays: list[dict[str, Any]] = []
+    for match in upcoming:
+        starts_at = parse_datetime(match.get("starts_at"))
+        if starts_at is None:
+            continue
+        if starts_at.astimezone(local_now.tzinfo).date() == local_now.date():
+            todays.append(match)
+    if todays:
+        configured_ids = {str(match.get("event_id") or "") for match in todays}
+        if config.espn.enabled and config.espn.event_id in configured_ids:
+            return None
+        return daily_setup_reminder_alert(todays[0], len(todays), setup_url, config.language)
+    if not upcoming:
+        return no_fixture_prompt_alert(setup_url, config.setup_server.lookahead_days, config.language)
+    return None
+
+
 def setup_confirmation_alert(config: WatchConfig) -> Alert:
     favorite = (
         localized_team_name(config.espn, config.espn.favorite_team)
@@ -2825,6 +2933,7 @@ def run_watch(args: argparse.Namespace) -> int:
     next_setup_pending_poll_at = 0.0
     last_poll_tier = ""
     prompted_schedule_events: set[str] = set()
+    daily_prompt_done_for = setup_service.last_daily_prompt() if setup_service else ""
     setup_acknowledgements: dict[str, dict[str, Any]] = {}
     delivery_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stackchan-delivery")
     delivery_future: Future[bool] | None = None
@@ -2930,7 +3039,14 @@ def run_watch(args: argparse.Namespace) -> int:
                         acknowledgement = setup_acknowledgements.get(request_id)
                         if acknowledgement is None:
                             try:
-                                result = setup_service.apply_selection(setup_request)
+                                standalone_request = bool(setup_request.get("standalone")) or (
+                                    bool(setup_request.get("kalshi_url"))
+                                    and not setup_request.get("espn_event_id")
+                                )
+                                if standalone_request:
+                                    result = setup_service.apply_market_selection(setup_request)
+                                else:
+                                    result = setup_service.apply_selection(setup_request)
                                 acknowledgement = {
                                     "request_id": request_id,
                                     "ok": True,
@@ -2993,6 +3109,31 @@ def run_watch(args: argparse.Namespace) -> int:
                         )
                         prompted_schedule_events.add(event_id)
                         break
+                    if (
+                        config.setup_server.daily_prompt_hour >= 0
+                        and not in_quiet_hours(config.quiet_hours)
+                    ):
+                        local_now = datetime.now().astimezone()
+                        today = local_now.strftime("%Y-%m-%d")
+                        if (
+                            local_now.hour >= config.setup_server.daily_prompt_hour
+                            and daily_prompt_done_for != today
+                        ):
+                            # One decision per local day, prompted or not, so a
+                            # configured match day stays quiet all day.
+                            daily_prompt_done_for = today
+                            try:
+                                setup_service.record_daily_prompt(today)
+                            except (OSError, json.JSONDecodeError):
+                                pass
+                            prompt_alert = choose_daily_prompt(
+                                upcoming,
+                                config,
+                                f"http://{config.stackchan_host}/setup",
+                                local_now,
+                            )
+                            if prompt_alert is not None:
+                                pending.append((prompt_alert, None, None, None))
                 except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError) as error:
                     next_schedule_refresh_at = cycle_monotonic + 120
                     print(f"warning: ESPN schedule refresh failed: {error}", file=sys.stderr)

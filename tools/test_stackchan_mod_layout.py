@@ -50,6 +50,13 @@ class ModLayoutTests(unittest.TestCase):
         self.assertIn("setTimeout(refresh,3000)", WEB_SOURCE)
         self.assertNotIn("setInterval(refresh,1500)", WEB_SOURCE)
 
+    def test_device_setup_page_offers_standalone_market_watch(self):
+        self.assertIn('id="kalshiUrl"', WEB_SOURCE)
+        self.assertIn('id="watchMarket"', WEB_SOURCE)
+        self.assertIn("standalone:true", WEB_SOURCE)
+        self.assertIn("payload?.standalone", WEB_SOURCE)
+        self.assertIn("kalshi_url required", WEB_SOURCE)
+
     def test_mod_uses_disconnect_safe_http_service(self):
         self.assertIn("from 'matchday/http-server-safe'", WEB_SOURCE)
         self.assertIn("headers.set('content-length', this.#body.byteLength)", HTTP_SOURCE)

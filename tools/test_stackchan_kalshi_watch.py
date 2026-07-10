@@ -1656,5 +1656,79 @@ class AlertQueueTests(unittest.TestCase):
         self.assertEqual([item.alert.kind for item in deferred], ["price_move"])
 
 
+class DailyPromptTests(unittest.TestCase):
+    SETUP_URL = "http://192.0.2.9/setup"
+
+    def _now_local(self):
+        return datetime(2026, 7, 10, 10, 30).astimezone()
+
+    def _match(self, hours_ahead: float, event_id: str = "760777", label: str = "西班牙 vs 比利时"):
+        starts_at = (self._now_local() + timedelta(hours=hours_ahead)).astimezone(timezone.utc)
+        return {"event_id": event_id, "label": label, "starts_at": starts_at.isoformat()}
+
+    def test_unconfigured_match_today_prompts_setup(self):
+        config = watcher.WatchConfig(espn=watcher.ESPNConfig(enabled=False))
+        upcoming = [self._match(5), self._match(8, event_id="760778")]
+
+        alert = watcher.choose_daily_prompt(upcoming, config, self.SETUP_URL, self._now_local())
+
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.kind, "daily_setup")
+        self.assertEqual(alert.setup_url, self.SETUP_URL)
+        self.assertIn("2场比赛", alert.speech)
+        self.assertIn("扫码", alert.speech)
+        self.assertIn("西班牙 vs 比利时", alert.speech)
+
+    def test_configured_match_today_stays_quiet(self):
+        espn = espn_config()
+        espn.event_id = "760777"
+        config = watcher.WatchConfig(espn=espn)
+        upcoming = [self._match(5)]
+
+        alert = watcher.choose_daily_prompt(upcoming, config, self.SETUP_URL, self._now_local())
+
+        self.assertIsNone(alert)
+
+    def test_matches_only_on_later_days_stay_quiet(self):
+        config = watcher.WatchConfig(espn=watcher.ESPNConfig(enabled=False))
+        upcoming = [self._match(30)]
+
+        alert = watcher.choose_daily_prompt(upcoming, config, self.SETUP_URL, self._now_local())
+
+        self.assertIsNone(alert)
+
+    def test_no_fixtures_prompts_market_discovery_in_english(self):
+        config = watcher.WatchConfig(
+            language="en",
+            espn=watcher.ESPNConfig(enabled=False),
+            setup_server=watcher.SetupServerConfig(lookahead_days=7),
+        )
+
+        alert = watcher.choose_daily_prompt([], config, self.SETUP_URL, self._now_local())
+
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.kind, "daily_discover")
+        self.assertEqual(alert.setup_url, self.SETUP_URL)
+        self.assertIn("next 7 days", alert.speech)
+        self.assertIn("Kalshi", alert.speech)
+        self.assertFalse(contains_han(alert.speech))
+        self.assertFalse(contains_han(alert.balloon))
+
+    def test_daily_prompt_hour_parses_and_clamps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "markets": [{"ticker": "KXTEST-1", "label": "test"}],
+                        "setup_server": {"daily_prompt_hour": 99},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config = watcher.load_config(path)
+        self.assertEqual(config.setup_server.daily_prompt_hour, 23)
+
+
 if __name__ == "__main__":
     unittest.main()

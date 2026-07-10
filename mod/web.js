@@ -86,6 +86,32 @@ function syncMatchSetup(payload) {
 }
 
 function queueMatchSetup(payload) {
+  const language = String(payload?.language ?? state.matchSetup.language)
+    .trim()
+    .toLowerCase()
+  if (language !== 'zh' && language !== 'en') {
+    return { ok: false, text: 'error language must be zh or en\n' }
+  }
+
+  // Standalone Kalshi market: no fixture option to validate against; the
+  // watcher resolves the event and reports the outcome through the ack.
+  if (payload?.standalone) {
+    const kalshiUrl = String(payload?.kalshi_url ?? '').trim()
+    if (!kalshiUrl) {
+      return { ok: false, text: 'error kalshi_url required\n' }
+    }
+    const pending = {
+      request_id: String(payload?.request_id ?? nowTicks()),
+      standalone: true,
+      kalshi_url: kalshiUrl,
+      language,
+    }
+    state.matchSetup.pending = pending
+    state.matchSetup.lastResult = null
+    savePreference('matchSetupPending', JSON.stringify(pending))
+    return { ok: true, text: 'ok market setup queued\n' }
+  }
+
   const eventId = String(payload?.espn_event_id ?? '').trim()
   const eventTicker = String(payload?.event_ticker ?? '')
     .trim()
@@ -101,14 +127,8 @@ function queueMatchSetup(payload) {
   const validTeams = [String(option.home?.name ?? ''), String(option.away?.name ?? '')]
   const favoriteTeam = String(payload?.favorite_team ?? '').trim()
   const positionTeam = String(payload?.position_team ?? '').trim()
-  const language = String(payload?.language ?? state.matchSetup.language)
-    .trim()
-    .toLowerCase()
   if ((favoriteTeam && !validTeams.includes(favoriteTeam)) || (positionTeam && !validTeams.includes(positionTeam))) {
     return { ok: false, text: 'error invalid favorite or position team\n' }
-  }
-  if (language !== 'zh' && language !== 'en') {
-    return { ok: false, text: 'error language must be zh or en\n' }
   }
   const pending = {
     request_id: String(payload?.request_id ?? nowTicks()),
@@ -232,6 +252,7 @@ function setupPageHtml() {
     .form{display:none}.form.show{display:block}.versus{font-size:18px;font-weight:750;margin-bottom:12px}.field{display:block;font-size:13px;font-weight:650;margin:12px 0 6px}
     .segment{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}.segment.two{grid-template-columns:repeat(2,minmax(0,1fr))}.segment label{min-width:0}.segment input{position:absolute;width:1px;height:1px;opacity:0}.segment span{display:flex;align-items:center;justify-content:center;min-height:44px;padding:6px 4px;font-size:13px;text-align:center;border-right:1px solid var(--line);overflow-wrap:anywhere}.segment label:last-child span{border-right:0}.segment input:checked+span{background:#17202a;color:#fff}
     button.primary{margin-top:16px;background:var(--red);border-color:var(--red);color:#fff;text-align:center}.message{min-height:22px;margin-top:10px;font-size:13px;color:var(--muted)}.message.ok{color:var(--green)}.message.error{color:#b42318}.empty,.current,.hint{font-size:13px;line-height:1.6;color:var(--muted)}.hint{margin-top:7px}
+    input.link{width:100%;min-height:44px;margin-top:10px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font:inherit}
     @media(max-width:420px){.match{grid-template-columns:1fr}.match time{justify-self:start}}
   </style>
 </head>
@@ -240,12 +261,13 @@ function setupPageHtml() {
   <section><h2 id="langTitle">播报语言 / Language</h2><div class="segment two" id="language"><label><input type="radio" name="language" value="zh" checked><span>中文</span></label><label><input type="radio" name="language" value="en"><span>English</span></label></div><div class="hint" id="langHint"></div></section>
   <section><h2 id="matchesTitle"></h2><div class="matches" id="matches"></div></section>
   <section class="form" id="form"><div class="versus" id="versus"></div><span class="field" id="favLabel"></span><div class="segment" id="favorite"></div><span class="field" id="posLabel"></span><div class="segment" id="position"></div><button class="primary" id="apply"></button><div class="message" id="message"></div></section>
+  <section><h2 id="standaloneTitle"></h2><div class="hint" id="standaloneHint"></div><input class="link" id="kalshiUrl" type="text" inputmode="url" autocomplete="off" placeholder="https://kalshi.com/markets/..."><button class="primary" id="watchMarket"></button><div class="message" id="marketMessage"></div></section>
   <section><h2 id="currentTitle"></h2><div class="current" id="current"></div></section>
 </main>
 <script>
 const I18N={
- zh:{docLang:'zh-CN',locale:'zh-CN',pageTitle:'Stack-chan 赛前设置',online:'设备在线',offline:'连接失败',langTitle:'播报语言 / Language',langHint:'页面即时切换；语音和气泡按此语言播报',matchesTitle:'未来比赛',empty:'watcher 暂无开放盘口',favLabel:'支持球队',posLabel:'赛前持仓',neutral:'中立',nopos:'没买',apply:'开始看球',currentTitle:'当前监控',loading:'读取中',none:'尚未配置',fav:'支持',pos:'持仓',posNone:'无',submitted:'已提交，等待 watcher',started:' 已开始监控',failed:'watcher 设置失败',submitFailed:'提交失败'},
- en:{docLang:'en',locale:'en-US',pageTitle:'Stack-chan Match Setup',online:'Device online',offline:'Connection lost',langTitle:'Language / 播报语言',langHint:'The page switches right away; speech and balloons use this language too',matchesTitle:'Upcoming matches',empty:'No open markets from the watcher yet',favLabel:'Your team',posLabel:'Pregame position',neutral:'Neutral',nopos:'No position',apply:'Start watching',currentTitle:'Now monitoring',loading:'Loading',none:'Not configured yet',fav:'team',pos:'position',posNone:'none',submitted:'Submitted, waiting for the watcher',started:' is now being watched',failed:'The watcher failed to apply it',submitFailed:'Submit failed'}};
+ zh:{docLang:'zh-CN',locale:'zh-CN',pageTitle:'Stack-chan 赛前设置',online:'设备在线',offline:'连接失败',langTitle:'播报语言 / Language',langHint:'页面即时切换；语音和气泡按此语言播报',matchesTitle:'未来比赛',empty:'watcher 暂无开放盘口',favLabel:'支持球队',posLabel:'赛前持仓',neutral:'中立',nopos:'没买',apply:'开始看球',standaloneTitle:'单独看一个 Kalshi 盘',standaloneHint:'没有球赛也能看盘：粘贴 Kalshi 事件链接或 ticker，价格会显示在底部滚动条',watchMarket:'开始看盘',needUrl:'请先粘贴 Kalshi 链接或 ticker',currentTitle:'当前监控',loading:'读取中',none:'尚未配置',fav:'支持',pos:'持仓',posNone:'无',submitted:'已提交，等待 watcher',started:' 已开始监控',failed:'watcher 设置失败',submitFailed:'提交失败'},
+ en:{docLang:'en',locale:'en-US',pageTitle:'Stack-chan Match Setup',online:'Device online',offline:'Connection lost',langTitle:'Language / 播报语言',langHint:'The page switches right away; speech and balloons use this language too',matchesTitle:'Upcoming matches',empty:'No open markets from the watcher yet',favLabel:'Your team',posLabel:'Pregame position',neutral:'Neutral',nopos:'No position',apply:'Start watching',standaloneTitle:'Watch a Kalshi market directly',standaloneHint:'No fixture needed: paste a Kalshi event link or ticker and prices show in the bottom ticker',watchMarket:'Watch market',needUrl:'Paste a Kalshi link or ticker first',currentTitle:'Now monitoring',loading:'Loading',none:'Not configured yet',fav:'team',pos:'position',posNone:'none',submitted:'Submitted, waiting for the watcher',started:' is now being watched',failed:'The watcher failed to apply it',submitFailed:'Submit failed'}};
 let lang='zh';
 const t=key=>I18N[lang][key];
 const state={selected:null,lastResult:'',languageInitialized:false,data:null};
@@ -262,11 +284,15 @@ function render(data){state.data=data;const root=$('matches');root.textContent='
 data.options.forEach(match=>{const button=document.createElement('button');button.className='match';button.dataset.id=match.event_id;button.innerHTML='<strong></strong><time></time>';button.querySelector('strong').textContent=matchLabel(match);button.querySelector('time').textContent=localTime(match.starts_at);button.onclick=()=>choose(match);root.appendChild(button)});
 const current=data.current||{};if(!state.languageInitialized){state.languageInitialized=true;setLanguage((data.language||current.language)==='en'?'en':'zh',false)}
 $('current').textContent=currentLine(current);
-if(data.lastResult&&data.lastResult.request_id!==state.lastResult){state.lastResult=data.lastResult.request_id;if(data.lastResult.ok)message((pick(data.lastResult.label_i18n,data.lastResult.label)||'')+t('started'),'ok');else message(data.lastResult.error||t('failed'),'error')}}
-function applyStatic(){document.documentElement.lang=t('docLang');document.title=t('pageTitle');$('pageTitle').textContent=t('pageTitle');$('langTitle').textContent=t('langTitle');$('langHint').textContent=t('langHint');$('matchesTitle').textContent=t('matchesTitle');$('favLabel').textContent=t('favLabel');$('posLabel').textContent=t('posLabel');$('apply').textContent=t('apply');$('currentTitle').textContent=t('currentTitle');if(!state.data)$('current').textContent=t('loading')}
+if(data.lastResult&&data.lastResult.request_id!==state.lastResult){state.lastResult=data.lastResult.request_id;const okText=(pick(data.lastResult.label_i18n,data.lastResult.label)||'')+t('started');if(data.lastResult.ok)notify(okText,'ok');else notify(data.lastResult.error||t('failed'),'error')}}
+function notify(text,kind){message(text,kind);const el=$('marketMessage');el.textContent=text;el.className='message '+kind}
+function applyStatic(){document.documentElement.lang=t('docLang');document.title=t('pageTitle');$('pageTitle').textContent=t('pageTitle');$('langTitle').textContent=t('langTitle');$('langHint').textContent=t('langHint');$('matchesTitle').textContent=t('matchesTitle');$('favLabel').textContent=t('favLabel');$('posLabel').textContent=t('posLabel');$('apply').textContent=t('apply');$('standaloneTitle').textContent=t('standaloneTitle');$('standaloneHint').textContent=t('standaloneHint');$('watchMarket').textContent=t('watchMarket');$('currentTitle').textContent=t('currentTitle');if(!state.data)$('current').textContent=t('loading')}
 function setLanguage(next,post){lang=next==='en'?'en':'zh';const input=document.querySelector('input[name="language"][value="'+lang+'"]');if(input)input.checked=true;applyStatic();if(state.data)render(state.data);if(state.selected)choose(state.selected,true);if(post)fetch('/api/match-setup/language',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({language:lang})}).catch(()=>{})}
 async function refresh(){try{const response=await fetch('/api/match-setup');render(await response.json());$('health').textContent=t('online')}catch(error){$('health').textContent=t('offline')}finally{setTimeout(refresh,3000)}}
 $('apply').onclick=async()=>{if(!state.selected)return;const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';const payload={request_id:String(Date.now()),event_ticker:state.selected.kalshi_event_ticker,espn_event_id:state.selected.event_id,favorite_team:favorite,position_team:position,language:lang};message(t('submitted'));try{const response=await fetch('/api/match-setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.error||t('submitFailed'))}catch(error){message(error.message,'error')}};
+$('watchMarket').onclick=async()=>{const value=$('kalshiUrl').value.trim();const el=$('marketMessage');if(!value){el.textContent=t('needUrl');el.className='message error';return}
+el.textContent=t('submitted');el.className='message';
+try{const response=await fetch('/api/match-setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:String(Date.now()),standalone:true,kalshi_url:value,language:lang})});const result=await response.json();if(!response.ok)throw new Error(result.error||t('submitFailed'))}catch(error){el.textContent=error.message;el.className='message error'}};
 document.querySelectorAll('input[name="language"]').forEach(input=>{input.onchange=()=>setLanguage(input.value,true)});
 applyStatic();
 refresh();

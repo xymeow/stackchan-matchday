@@ -87,6 +87,21 @@ With `setup_server.enabled: true`, open `http://<stackchan-ip>/setup` on a
 phone in the same LAN to pick the next match, your team, and an optional
 pregame position; the watcher validates and hot-reloads without restarting.
 
+**Proactive prompts.** Once per local day after `setup_server.daily_prompt_hour`
+(default 10, `-1` disables, quiet hours respected), the robot speaks up on its
+own: if fixtures kick off today and none of them is configured, it asks you to
+scan the QR and pick one; if the lookahead window has no fixtures at all, it
+asks whether you would like to watch some other Kalshi market instead. The
+usual pregame prompt (`prompt_minutes_before` ahead of an unconfigured
+kickoff) still fires independently.
+
+**Standalone Kalshi markets.** The setup page can watch any Kalshi event
+without a fixture: paste an event link or ticker under *Watch a Kalshi market
+directly* and the watcher configures up to its four most-traded markets into
+the bottom text ticker with price alerts (probability bar and ESPN commentary
+turn off, since arbitrary markets have neither team flags nor a fixture).
+Selecting a match later switches everything back.
+
 **Waking the setup QR on the device.** Double-tap the three-zone touch bar on
 top of the head to show the setup QR; while it is visible, tap the top bar
 once to hide it. Briefly pressing the physical Power button does the same on
