@@ -1,0 +1,12 @@
+.DS_Store
+__pycache__/
+*.log
+node_modules/
+
+# Machine-local watcher config; commit only the example.
+config/kalshi_watchlist.json
+config/kalshi_watchlist.local.json
+
+# CJK font binaries are prepared locally, never committed (license).
+host/cjk-font/*.ttf
+host/cjk-font/*.bf4
