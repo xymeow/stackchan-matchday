@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python test suites (stdlib only)
+        run: |
+          set -e
+          for t in tools/test_*.py; do
+            case "$t" in
+              *test_stackchan_tts_server.py) python3 -m tools.test_stackchan_tts_server ;;
+              *) python3 "$t" ;;
+            esac
+          done
+
+      - name: Mod module syntax (ESM)
+        run: |
+          set -e
+          mkdir -p /tmp/modcheck
+          for f in mod/*.js; do
+            cp "$f" "/tmp/modcheck/$(basename "$f" .js).mjs"
+            node --check "/tmp/modcheck/$(basename "$f" .js).mjs"
+          done
+
+      - name: JSON validity
+        run: |
+          set -e
+          python3 - <<'EOF'
+          import json, pathlib
+          for path in pathlib.Path('.').rglob('*.json'):
+              if '.git' in path.parts:
+                  continue
+              json.loads(path.read_text(encoding='utf-8'))
+              print('ok', path)
+          EOF
