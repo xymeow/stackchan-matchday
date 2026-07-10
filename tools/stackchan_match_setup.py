@@ -16,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from stackchan_i18n import SUPPORTED_LANGUAGES, localized_pair, normalize_language, resolve_text
+
 
 REQUEST_TIMEOUT_SECONDS = 12
 DEFAULT_SETUP_PORT = 8788
@@ -246,6 +248,7 @@ class MatchSetupService:
         kalshi_series_ticker: str = "KXWCADVANCE",
         lookahead_days: int = 10,
         cache_seconds: int = 300,
+        language: str = "zh",
     ) -> None:
         self.config_path = config_path
         self.kalshi_base_url = kalshi_base_url.rstrip("/")
@@ -254,6 +257,7 @@ class MatchSetupService:
         self.kalshi_series_ticker = kalshi_series_ticker.strip().upper()
         self.lookahead_days = max(1, lookahead_days)
         self.cache_seconds = max(30, cache_seconds)
+        self.language = normalize_language(language)
         self.setup_url = ""
         self._lock = threading.Lock()
         self._reload_requested = threading.Event()
@@ -319,6 +323,11 @@ class MatchSetupService:
         options: list[dict[str, Any]] = []
         for match in self.upcoming_matches(force=force):
             option = dict(match)
+            option["label"] = (
+                f"{match['home']['localized']} vs {match['away']['localized']}"
+                if self.language == "zh"
+                else f"{match['home']['name']} vs {match['away']['name']}"
+            )
             option["kalshi_event_ticker"] = kalshi_by_teams.get(
                 frozenset(match_teams(match)),
                 "",
@@ -389,21 +398,56 @@ class MatchSetupService:
 
     def current_status(self) -> dict[str, Any]:
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        language = self.language
         espn = raw.get("espn") or {}
         team_names = espn.get("team_names") or {}
         favorite_team = str(espn.get("favorite_team") or "")
         position_team = str(espn.get("position_team") or "")
         return {
             "setup_url": self.setup_url,
+            "language": language,
             "kalshi_url": str((raw.get("setup_server") or {}).get("last_kalshi_url") or ""),
             "event_id": str(espn.get("event_id") or ""),
-            "label": str(espn.get("label") or ""),
+            "label": resolve_text(espn.get("label"), language, path="espn.label"),
+            "label_i18n": {
+                lang: resolve_text(espn.get("label"), lang, path="espn.label")
+                for lang in SUPPORTED_LANGUAGES
+            },
             "starts_at": str(espn.get("starts_at") or ""),
-            "favorite_team": str(team_names.get(favorite_team) or favorite_team),
-            "position_team": str(team_names.get(position_team) or position_team),
+            "favorite_team": resolve_text(
+                team_names.get(favorite_team),
+                language,
+                path=f"espn.team_names[{favorite_team!r}]",
+                fallback=favorite_team,
+            ),
+            "favorite_team_i18n": {
+                lang: resolve_text(
+                    team_names.get(favorite_team),
+                    lang,
+                    path=f"espn.team_names[{favorite_team!r}]",
+                    fallback=favorite_team,
+                )
+                for lang in SUPPORTED_LANGUAGES
+            },
+            "position_team": resolve_text(
+                team_names.get(position_team),
+                language,
+                path=f"espn.team_names[{position_team!r}]",
+                fallback=position_team,
+            ),
+            "position_team_i18n": {
+                lang: resolve_text(
+                    team_names.get(position_team),
+                    lang,
+                    path=f"espn.team_names[{position_team!r}]",
+                    fallback=position_team,
+                )
+                for lang in SUPPORTED_LANGUAGES
+            },
         }
 
     def apply_selection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        language = normalize_language(payload.get("language", self.language), path="language")
         kalshi_value = str(payload.get("kalshi_url") or payload.get("event_ticker") or "")
         event_ticker = extract_kalshi_event_ticker(kalshi_value)
         event, markets = self._kalshi_event(event_ticker)
@@ -430,9 +474,11 @@ class MatchSetupService:
             raise ValueError("持仓球队不属于这场比赛")
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["language"] = language
         existing_markets = raw.get("markets") or []
         market_defaults = dict(existing_markets[0]) if existing_markets else {}
         localized = [str(team["localized"]) for team in ordered_teams]
+        english = [str(team["name"]) for team in ordered_teams]
 
         bar = raw.setdefault("probability_bar", {})
         bar.update(
@@ -455,7 +501,10 @@ class MatchSetupService:
                 "enabled": True,
                 "event_id": espn_event_id,
                 "league": self.league,
-                "label": f"{localized[0]} vs {localized[1]}",
+                "label": localized_pair(
+                    f"{localized[0]} vs {localized[1]}",
+                    f"{english[0]} vs {english[1]}",
+                ),
                 "starts_at": match["starts_at"],
                 "favorite_team": favorite_team,
                 "position_team": position_team,
@@ -464,9 +513,10 @@ class MatchSetupService:
         team_names = espn.setdefault("team_names", {})
         team_colors = espn.setdefault("team_colors", {})
         for team in ordered_teams:
-            team_names[team["name"]] = team["localized"]
+            localized_name = localized_pair(str(team["localized"]), str(team["name"]))
+            team_names[team["name"]] = localized_name
             if team.get("abbreviation"):
-                team_names[team["abbreviation"]] = team["localized"]
+                team_names[team["abbreviation"]] = localized_name
             team_colors[team["name"]] = team["color"]
             if team.get("abbreviation"):
                 team_colors[team["abbreviation"]] = team["color"]
@@ -477,7 +527,10 @@ class MatchSetupService:
             configured.update(
                 {
                     "ticker": str(market["ticker"]).upper(),
-                    "label": f"{team['localized']}晋级",
+                    "label": localized_pair(
+                        f"{team['localized']}晋级",
+                        f"{team['name']} to advance",
+                    ),
                     "side_i_care": "yes",
                     "alerts_enabled": index == 0,
                     "show_in_ticker": index == 0,
@@ -487,13 +540,25 @@ class MatchSetupService:
                 configured.update(
                     {
                         "goal_signal_enabled": True,
-                        "goal_signal_up_speech": (
-                            f"盘口突然拉升！{localized[0]}这边很可能进球了！"
-                            "先别眨眼，等文字直播确认！"
+                        "goal_signal_up_speech": localized_pair(
+                            (
+                                f"盘口突然拉升！{localized[0]}这边很可能进球了！"
+                                "先别眨眼，等文字直播确认！"
+                            ),
+                            (
+                                f"The market just jumped! {english[0]} may have scored. "
+                                "Waiting for commentary confirmation!"
+                            ),
                         ),
-                        "goal_signal_down_speech": (
-                            f"盘口突然跳水！{localized[1]}可能进球了，"
-                            "先看场上，等文字直播确认。"
+                        "goal_signal_down_speech": localized_pair(
+                            (
+                                f"盘口突然跳水！{localized[1]}可能进球了，"
+                                "先看场上，等文字直播确认。"
+                            ),
+                            (
+                                f"The market just dropped! {english[1]} may have scored. "
+                                "Waiting for commentary confirmation."
+                            ),
                         ),
                     }
                 )
@@ -509,10 +574,19 @@ class MatchSetupService:
         setup["last_event_ticker"] = str(event.get("event_ticker") or event_ticker)
 
         atomic_write_json(self.config_path, raw)
+        self.language = language
+        with self._lock:
+            self._options_cache = []
+            self._options_cached_at = 0.0
         self._reload_requested.set()
         return {
             "ok": True,
-            "label": espn["label"],
+            "language": language,
+            "label": resolve_text(espn["label"], language, path="espn.label"),
+            "label_i18n": {
+                lang: resolve_text(espn["label"], lang, path="espn.label")
+                for lang in SUPPORTED_LANGUAGES
+            },
             "event_id": espn_event_id,
             "favorite_team": favorite_team,
             "position_team": position_team,
@@ -543,16 +617,17 @@ def setup_page_html() -> str:
     .matches{display:grid;gap:8px}.match{width:100%;display:grid;grid-template-columns:1fr auto;text-align:left;gap:10px;padding:11px;background:var(--panel)}
     .match strong{display:block;font-size:15px}.match time{font-size:12px;color:var(--muted);align-self:center}.market-ready{display:block;margin-top:3px;font-size:11px;color:#067647;font-style:normal}.match.selected{border-color:var(--focus);box-shadow:0 0 0 1px var(--focus)}
     .resolved{display:none;margin-top:14px;padding:12px;border-left:3px solid var(--accent2);background:#fff}.resolved.show{display:block}.versus{font-size:18px;font-weight:750;margin-bottom:10px}
-    .segment{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}
+    .segment{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}.segment.two{grid-template-columns:repeat(2,minmax(0,1fr))}
     .segment label{min-width:0}.segment input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}.segment span{display:flex;align-items:center;justify-content:center;min-height:44px;padding:7px 5px;font-size:13px;text-align:center;border-right:1px solid var(--line);overflow-wrap:anywhere}.segment label:last-child span{border-right:0}.segment input:checked+span{background:#17202a;color:#fff}
     .message{min-height:22px;margin-top:10px;font-size:13px;color:var(--muted)}.message.error{color:#b42318}.message.ok{color:#067647}
-    .empty{font-size:13px;color:var(--muted);padding:12px 0}.current{font-size:13px;color:var(--muted);line-height:1.6}
+    .empty{font-size:13px;color:var(--muted);padding:12px 0}.current,.hint{font-size:13px;color:var(--muted);line-height:1.6}.hint{margin-top:7px}
     @media(max-width:420px){main{padding-left:12px;padding-right:12px}.row{grid-template-columns:1fr}.row button{width:100%}.match{grid-template-columns:1fr}.match time{justify-self:start}}
   </style>
 </head>
 <body>
 <main>
   <header><h1>Stack-chan 赛前设置</h1><div class="status" id="health">连接中</div></header>
+  <section><h2>播报语言 / Commentary language</h2><div class="segment two" id="language"><label><input type="radio" name="language" value="zh" checked><span>中文</span></label><label><input type="radio" name="language" value="en"><span>English</span></label></div><div class="hint">选择比赛并点“开始看球”后生效</div></section>
   <section><h2>未来比赛</h2><div class="matches" id="matches"><div class="empty">正在读取赛程</div></div></section>
   <section>
     <h2>盘口与直播</h2>
@@ -579,15 +654,16 @@ function renderMatches(matches){
   if(!matches.length){root.innerHTML='<div class="empty">未来十天没有开放的双方盘口</div>';return}
   matches.forEach(match=>{const button=document.createElement('button');button.className='match';button.dataset.id=match.event_id;button.innerHTML=`<strong>${match.label}${match.kalshi_event_ticker?'<em class="market-ready">Kalshi 盘口可用</em>':''}</strong><time>${localTime(match.starts_at)}</time>`;button.onclick=()=>chooseMatch(match);root.appendChild(button)})
 }
-function choices(rootId,name,teams,emptyLabel){const root=$(rootId);root.textContent='';[...teams,{name:'',localized:emptyLabel}].forEach((team,index)=>{const label=document.createElement('label');label.innerHTML=`<input type="radio" name="${name}" value="${team.name}" ${index===teams.length?'checked':''}><span>${team.localized}</span>`;root.appendChild(label)})}
+function choices(rootId,name,teams,emptyLabel){const root=$(rootId);root.textContent='';const language=document.querySelector('input[name="language"]:checked')?.value||'zh';[...teams,{name:'',localized:emptyLabel}].forEach((team,index)=>{const label=document.createElement('label');const text=language==='en'&&team.name?team.name:team.localized;label.innerHTML=`<input type="radio" name="${name}" value="${team.name}" ${index===teams.length?'checked':''}><span>${text}</span>`;root.appendChild(label)})}
 function selectRecommendedEspn(){const select=$('espn');const preferred=state.selectedEventId||state.resolved?.recommended_event_id;if(preferred&&[...select.options].some(option=>option.value===preferred))select.value=preferred}
-function renderResolved(data){state.resolved=data;$('versus').textContent=data.teams.map(team=>team.localized).join(' vs ');const select=$('espn');select.textContent='';data.espn_candidates.forEach(match=>{const option=document.createElement('option');option.value=match.event_id;option.textContent=`${match.label} · ${localTime(match.starts_at)}`;select.appendChild(option)});choices('favorite','favorite_team',data.teams,'中立');choices('position','position_team',data.teams,'没买');selectRecommendedEspn();$('resolved').classList.add('show')}
+function renderResolved(data){state.resolved=data;const english=document.querySelector('input[name="language"]:checked')?.value==='en';$('versus').textContent=data.teams.map(team=>english?team.name:team.localized).join(' vs ');const select=$('espn');select.textContent='';data.espn_candidates.forEach(match=>{const option=document.createElement('option');option.value=match.event_id;option.textContent=`${match.label} · ${localTime(match.starts_at)}`;select.appendChild(option)});choices('favorite','favorite_team',data.teams,english?'Neutral':'中立');choices('position','position_team',data.teams,english?'No position':'没买');selectRecommendedEspn();$('resolved').classList.add('show')}
 async function json(url,options){const response=await fetch(url,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data}
 async function resolveKalshi(){setMessage('正在解析盘口和比赛');try{const data=await json('/api/setup/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value})});renderResolved(data);setMessage('已匹配双方盘口','ok')}catch(error){setMessage(error.message,'error')}}
 async function chooseMatch(match){state.selectedEventId=match.event_id;document.querySelectorAll('.match').forEach(el=>el.classList.toggle('selected',el.dataset.id===match.event_id));if(match.kalshi_event_ticker){$('kalshi').value=match.kalshi_event_ticker;await resolveKalshi()}else if(state.resolved){selectRecommendedEspn()}}
-async function boot(){try{const [status,upcoming]=await Promise.all([json('/api/setup/status'),json('/api/setup/upcoming')]);$('health').textContent='watcher 在线';$('kalshi').value=status.kalshi_url||'';$('current').textContent=status.label?`${status.label} · 支持 ${status.favorite_team||'中立'} · 持仓 ${status.position_team||'无'}`:'尚未配置';renderMatches(upcoming.matches)}catch(error){$('health').textContent='连接失败';setMessage(error.message,'error')}}
+async function boot(){try{const [status,upcoming]=await Promise.all([json('/api/setup/status'),json('/api/setup/upcoming')]);$('health').textContent='watcher 在线';$('kalshi').value=status.kalshi_url||'';const language=status.language==='en'?'en':'zh';const input=document.querySelector(`input[name="language"][value="${language}"]`);if(input)input.checked=true;$('current').textContent=status.label?`${status.label} · 支持 ${status.favorite_team||'中立'} · 持仓 ${status.position_team||'无'}`:'尚未配置';renderMatches(upcoming.matches)}catch(error){$('health').textContent='连接失败';setMessage(error.message,'error')}}
 $('resolve').onclick=resolveKalshi;
-$('apply').onclick=async()=>{const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';setMessage('正在切换 watcher');try{const data=await json('/api/setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value,event_ticker:state.resolved.event_ticker,espn_event_id:$('espn').value,favorite_team:favorite,position_team:position})});setMessage(`${data.label} 已开始监控`,'ok');$('current').textContent=`${data.label} · 支持 ${favorite||'中立'} · 持仓 ${position||'无'}`}catch(error){setMessage(error.message,'error')}};
+document.querySelectorAll('input[name="language"]').forEach(input=>{input.onchange=()=>{if(state.resolved)renderResolved(state.resolved)}});
+$('apply').onclick=async()=>{const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';const language=document.querySelector('input[name="language"]:checked')?.value||'zh';setMessage('正在切换 watcher');try{const data=await json('/api/setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value,event_ticker:state.resolved.event_ticker,espn_event_id:$('espn').value,favorite_team:favorite,position_team:position,language})});setMessage(`${data.label} 已开始监控`,'ok');$('current').textContent=`${data.label} · 支持 ${favorite||'中立'} · 持仓 ${position||'无'}`}catch(error){setMessage(error.message,'error')}};
 boot();
 </script>
 </body>

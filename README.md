@@ -25,14 +25,15 @@ ESPN scoreboard/summary -+          |                                   |
 
 ## Repository layout
 
-- `mod/` — the device mod (six JS modules + flag/QR assets). Builds to ~224KB,
-  fits a standard 256KB `xs` partition; no host source patches required.
+- `mod/` — the device mod (seven JS modules + flag/QR assets). Builds to
+  ~236KB, fits a standard 256KB `xs` partition; no host source patches
+  required.
 - `host/` — two reviewable git patches for the host build (mod partition for
   CoreS3 — required; optional `StackChanCN-24` CJK font) and the font prep
   script.
 - `tools/` — the Kalshi/ESPN watcher, phone-setup service, LAN TTS server,
-  CLI control helper, flag-asset generator, and tests (stdlib only, no pip
-  installs).
+  match replay, shared i18n helpers, CLI control helper, flag-asset
+  generator, and tests (stdlib only, no pip installs).
 - `config/` — example watchlist and flag-pack definitions. Copy
   `kalshi_watchlist.example.json` to `kalshi_watchlist.json` (gitignored) and
   edit.
@@ -86,6 +87,78 @@ With `setup_server.enabled: true`, open `http://<stackchan-ip>/setup` on a
 phone in the same LAN to pick the next match, your team, and an optional
 pregame position; the watcher validates and hot-reloads without restarting.
 
+**Waking the setup QR on the device.** Double-tap the three-zone touch bar on
+top of the head to show the setup QR; while it is visible, tap the top bar
+once to hide it. Briefly pressing the physical Power button does the same on
+hosts built from `dev/v1.0` commit `ded5ca9` (power-button support) or later.
+The mod reads the Si12T top bar's raw 0–3 intensity samples itself with
+hysteresis (press ≥ 2, release ≤ 1) instead of the host gesture recognizer,
+so capacitive baseline drift on a warm device neither fires false taps nor
+wedges the detector. `GET /api/status` → `setup.trigger.touch` exposes the
+live intensity/position/tap counters for tuning the thresholds in
+`mod/mod.js` without guesswork.
+
+`mod/assets/setup/setup-qr.png` encodes the device setup URL and is
+device-specific; regenerate it for your own address with e.g.
+`qrencode -s 4 -m 1 -o mod/assets/setup/setup-qr.png "http://<stackchan-ip>/setup"`
+and rebuild the mod.
+
+## Language
+
+Set the top-level `language` to `"zh"` or `"en"`. This selects one complete
+output language for watcher-generated speech and balloons; Chinese remains the
+default for existing configs.
+
+The phone setup page has a `中文 / English` selector that switches the whole
+page — section titles, match names, status lines — and the on-device QR
+overlay **immediately** (`POST /api/match-setup/language`), and is persisted
+across device reboots. A language picked on the page wins over whatever
+language the watcher pushes with its fixture options; watcher speech and
+balloons follow the selection once a match is applied with **Start watching**
+(the watcher's poll endpoint `GET /api/match-setup/pending` also reports the
+device language for future hot-switching).
+
+You can also preview another language without editing the config file:
+
+```sh
+python3 tools/stackchan_kalshi_watch.py --config config/kalshi_watchlist.json \
+  --language en --once --dry-run
+python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json \
+  --language en
+```
+
+User-facing config values accept either a legacy string or a localized object:
+
+```json
+{
+  "language": "en",
+  "mac_voice": {"zh": "Tingting", "en": "Samantha"},
+  "espn": {
+    "label": {"zh": "法国 vs 摩洛哥", "en": "France vs Morocco"},
+    "team_names": {
+      "France": {"zh": "法国", "en": "France"}
+    }
+  },
+  "markets": [{
+    "ticker": "KXEXAMPLE-FRA",
+    "label": {"zh": "法国晋级", "en": "France to advance"}
+  }]
+}
+```
+
+The same leaf format works for `player_names`, `star_chants`, and custom goal
+signal speeches. A legacy string is intentionally used verbatim in either
+mode, so old configs never change meaning; use the object form when both
+languages are wanted. Missing English names fall back to ESPN's source name,
+and missing chants fall back to the built-in English goal sentence. The phone
+setup service writes bilingual labels and goal-signal text when switching
+matches.
+
+The LAN TTS server automatically selects Tingting for Chinese text and
+Samantha for English text (override them with `STACKCHAN_TTS_ZH_VOICE` and
+`STACKCHAN_TTS_EN_VOICE`). The `mac_voice` field is also localizable for the
+direct macOS `say` transport.
+
 ## What changed vs. the original stackchan_control mod
 
 This is the slimmed-down successor of the mod in
@@ -100,9 +173,11 @@ This is the slimmed-down successor of the mod in
   id maps to a tone pattern, and player-specific lines stream from the LAN TTS
   server. (A "fat" variant with embedded crowd audio can come back later as an
   opt-in.)
-- **Watch-focused.** MCP server, image-avatar packs, drawer buttons, and
-  top-touch/IMU reactions were dropped; the upstream host's default mod and
-  the official `image_avatar_lite` / `mcp` mods cover those better.
+- **Watch-focused.** MCP server, image-avatar packs, drawer buttons, and the
+  decorative top-touch/IMU reactions were dropped; the upstream host's default
+  mod and the official `image_avatar_lite` / `mcp` mods cover those better.
+  The top touch bar is still used for one thing that matters here: waking the
+  setup QR with a double tap.
 - **Same wire protocol.** `pkbar`, `balloon temp`, `clip`, `voice`,
   `celebrate goal|result`, `light flash`, `setup show`, and the match-setup
   endpoints are unchanged, so existing watcher configs keep working; the
@@ -113,18 +188,48 @@ This is the slimmed-down successor of the mod in
 `POST /api/command` with plain text (`GET /api/help` lists everything):
 
 ```text
-pkbar es 62 AA151B be 38 EF3340      # persistent probability bar
+pkbar es 62 AA151B be 38 EF3340      # persistent top probability bar
 balloon temp 8000 西班牙进球了！        # marquee balloon, auto-hide
 voice favorite-goal 7号球员进球啦      # remote TTS, tone fallback
 celebrate goal 170 21 27             # dance + light + voice
-celebrate result win 170 21 27
+celebrate say 170 21 27 姆巴佩进球啦   # speech + dance + light, synchronized
+celebrate result win 170 21 27 比赛结束 # optional synchronized result speech
 setup show http://<stackchan-ip>/setup
 say 你好                              # balloon + TTS
 face happy · look 8 -2 · idle look on · light flash 0 85 164
 ```
 
-`GET /api/status` returns mod name/version, probability bar, TTS, power, and
-network state. `POST /api/control` accepts the JSON action form.
+`GET /api/status` returns mod name/version, probability bar, TTS, power,
+network state, and the setup-trigger touch counters. `POST /api/control`
+accepts the JSON action form. The watcher-facing match-setup endpoints are
+`/api/match-setup` (+ `/options`, `/apply`, `/ack`, `/pending`,
+`/language`).
+
+## Development
+
+```sh
+# All test suites (stdlib unittest)
+for t in tools/test_*.py; do python3 "$t"; done
+python3 -m tools.test_stackchan_tts_server
+
+# Build the mod archive without installing (from the stack-chan checkout's firmware/)
+mcrun -d -m -p esp32:./platforms/m5stackchan_cores3 -t build -f rgb565be \
+  /path/to/stackchan-matchday/mod/manifest.json
+```
+
+To replay the France–Morocco ESPN history (event `760510`) through the same
+alert parser, first preview the generated commands. Execution is opt-in and
+the continuous watcher must be stopped before it writes to the device:
+
+```sh
+python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json
+python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json --language en
+python3 tools/stackchan_match_replay.py --config config/kalshi_watchlist.json --execute
+```
+
+The replay reconstructs the score at each commentary entry, waits for each
+celebration/TTS cycle to finish, and centers the head with torque and light off
+when it completes.
 
 ## Security notes
 

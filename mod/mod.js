@@ -25,14 +25,32 @@ import {
   MAX_IDLE_LOOK_INTERVAL_MS,
 } from 'matchday/state'
 import {
+  hideSetupQr,
   noteActivity,
   setScreenBrightness,
   showBalloon,
+  showSetupQr,
   startIdleLook,
   startPowerManager,
   temporaryBalloon,
 } from 'matchday/ui'
 import { startHttp } from 'matchday/web'
+
+const SETUP_POWER_DEBOUNCE_MS = 600
+const SETUP_TOP_TAP_MAX_MS = 500
+const SETUP_TOP_MIN_INTER_TAP_MS = 120
+const SETUP_TOP_DOUBLE_TAP_WINDOW_MS = 900
+const SETUP_TOP_COOLDOWN_MS = 1500
+// The host GestureRecognizer counts any Si12T zone intensity >= 1 as a touch
+// and that threshold is fixed at construction, so on a warm device the
+// recognizer can sit in its "touched" state forever and never emit release —
+// taps stop arriving entirely. The mod therefore reads the raw 0-3 intensity
+// samples itself with hysteresis: a press needs a firm >= ON reading and a
+// release is any dip to <= OFF, so baseline drift at 1 neither triggers nor
+// wedges the detector.
+const SETUP_TOP_TOUCH_ON = 2
+const SETUP_TOP_TOUCH_OFF = 1
+const SETUP_TOP_SWIPE_REJECT = 45
 
 function restoreSettings(robot) {
   try {
@@ -59,9 +77,18 @@ function restoreSettings(robot) {
       startIdleLook(robot, state.idle.intervalMs)
     }
 
+    const savedLanguage = String(readPreference('language', ''))
+    if (savedLanguage === 'zh' || savedLanguage === 'en') {
+      state.matchSetup.language = savedLanguage
+    }
+
     const pendingSetup = String(readPreference('matchSetupPending', ''))
     if (pendingSetup) {
-      state.matchSetup.pending = JSON.parse(pendingSetup)
+      const pending = JSON.parse(pendingSetup)
+      state.matchSetup.pending = pending
+      if (pending?.language === 'zh' || pending?.language === 'en') {
+        state.matchSetup.language = pending.language
+      }
     }
     trace('[matchday] settings restored\n')
   } catch (error) {
@@ -98,6 +125,143 @@ function startFallbackAccessPoint(robot) {
   }
 }
 
+function localSetupUrl() {
+  const networkIp = safeNetGet('IP')
+  const ip = hasUsableIp(networkIp) ? networkIp : state.accessPoint?.ip
+  return hasUsableIp(ip) ? `http://${ip}/setup` : ''
+}
+
+function toggleLocalSetup(robot, source, ticks = nowTicks()) {
+  noteActivity(`setup-trigger:${source}`)
+  state.setup.trigger.lastSource = source
+  state.setup.trigger.lastTriggeredTicks = ticks
+  if (state.setup.visible) {
+    hideSetupQr(robot)
+    return
+  }
+
+  const url = localSetupUrl()
+  if (!url) {
+    temporaryBalloon(robot, 'Setup unavailable: no network', 2600)
+    return
+  }
+  const result = showSetupQr(robot, url)
+  if (!result.ok) state.lastError = result.text.trim()
+}
+
+function configureSetupTriggers(robot) {
+  const sources = []
+  const powerButton = globalThis.button?.power
+  if (powerButton) {
+    sources.push('power-button')
+    let lastPowerTicks = -Infinity
+    const previousPowerHandler = powerButton.onChanged
+    powerButton.onChanged = function () {
+      previousPowerHandler?.call(this)
+      if (!this.read()) return
+      const ticks = nowTicks()
+      if (ticks - lastPowerTicks < SETUP_POWER_DEBOUNCE_MS) return
+      lastPowerTicks = ticks
+      toggleLocalSetup(robot, 'power-button', ticks)
+    }
+  }
+
+  const touchPanel = robot.touchPanel
+  if (touchPanel) {
+    sources.push('top-double-tap')
+    const touchState = state.setup.trigger.touch
+    const previousOnSample = touchPanel.onSample
+    let touchActive = false
+    let touchStartTicks = 0
+    let touchStartPosition = 0
+    let touchMaxDrift = 0
+    let firstTapTicks
+    let ignoreUntilTicks = 0
+
+    // Same left/center/right weighting the host recognizer uses: -100..100.
+    const topPosition = (sample) => {
+      const left = sample[0] ?? 0
+      const center = sample[1] ?? 0
+      const right = sample[2] ?? 0
+      const total = left + center + right
+      if (!total) return 0
+      return Math.trunc((left * -100 + center * 0 + right * 100) / total)
+    }
+
+    const handleTap = (ticks) => {
+      if (ticks < ignoreUntilTicks) {
+        firstTapTicks = undefined
+        return
+      }
+      if (state.setup.visible) {
+        firstTapTicks = undefined
+        ignoreUntilTicks = ticks + SETUP_TOP_COOLDOWN_MS
+        toggleLocalSetup(robot, 'top-double-tap', ticks)
+        return
+      }
+      if (firstTapTicks !== undefined) {
+        const gap = ticks - firstTapTicks
+        if (gap < SETUP_TOP_MIN_INTER_TAP_MS) return
+        if (gap <= SETUP_TOP_DOUBLE_TAP_WINDOW_MS) {
+          firstTapTicks = undefined
+          ignoreUntilTicks = ticks + SETUP_TOP_COOLDOWN_MS
+          toggleLocalSetup(robot, 'top-double-tap', ticks)
+          return
+        }
+      }
+      firstTapTicks = ticks
+    }
+
+    touchPanel.onSample = function (sample, ticks) {
+      previousOnSample?.call(this, sample, ticks)
+      // An exception here would kill the panel's sampling timer and freeze
+      // every touch feature until reboot, so the handler never throws.
+      try {
+        if (ticks === undefined) ticks = nowTicks()
+        const intensity = Math.max(sample?.[0] ?? 0, sample?.[1] ?? 0, sample?.[2] ?? 0)
+        touchState.intensity = intensity
+        touchState.position = topPosition(sample ?? [])
+
+        if (!touchActive) {
+          if (intensity >= SETUP_TOP_TOUCH_ON) {
+            touchActive = true
+            touchState.active = true
+            touchStartTicks = ticks
+            touchStartPosition = touchState.position
+            touchMaxDrift = 0
+          }
+          return
+        }
+
+        if (intensity > SETUP_TOP_TOUCH_OFF) {
+          const drift = Math.abs(touchState.position - touchStartPosition)
+          if (drift > touchMaxDrift) touchMaxDrift = drift
+          return
+        }
+
+        touchActive = false
+        touchState.active = false
+        const heldMs = ticks - touchStartTicks
+        touchState.lastTapMs = heldMs
+        touchState.lastDrift = touchMaxDrift
+        const isTap = heldMs <= SETUP_TOP_TAP_MAX_MS && touchMaxDrift <= SETUP_TOP_SWIPE_REJECT
+        if (!isTap) {
+          firstTapTicks = undefined
+          return
+        }
+        touchState.taps += 1
+        handleTap(ticks)
+      } catch (error) {
+        state.lastError = `setup-trigger touch: ${error}`
+      }
+    }
+  }
+
+  state.setup.trigger.available = sources.length > 0
+  state.setup.trigger.sources = sources
+  trace(`[matchday] setup triggers: ${sources.join(', ') || 'none'}\n`)
+}
+
 let httpServer
 
 export function onRobotCreated(robot, _device) {
@@ -109,4 +273,5 @@ export function onRobotCreated(robot, _device) {
   startPowerManager()
   startFallbackAccessPoint(robot)
   httpServer = startHttp(robot)
+  configureSetupTriggers(robot)
 }

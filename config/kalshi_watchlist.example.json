@@ -3,8 +3,9 @@
   "stackchan_transport": "http",
   "stackchan_serial_port": "/dev/cu.usbmodem101",
   "stackchan_serial_baud": 115200,
+  "language": "zh",
   "voice_transport": "clip",
-  "mac_voice": "Tingting",
+  "mac_voice": {"zh": "Tingting", "en": "Samantha"},
   "mac_say_rate": 185,
   "kalshi_base_url": "https://external-api.kalshi.com/trade-api/v2",
   "poll_seconds": 10,
@@ -53,7 +54,10 @@
     "enabled": false,
     "event_id": "760510",
     "league": "fifa.world",
-    "label": "法国 vs 摩洛哥",
+    "label": {
+      "zh": "法国 vs 摩洛哥",
+      "en": "France vs Morocco"
+    },
     "starts_at": "",
     "poll_seconds": 2,
     "favorite_team": "France",
@@ -71,10 +75,10 @@
     "announce_dangerous_blocks": true,
     "announce_substitutions": true,
     "team_names": {
-      "France": "法国",
-      "FRA": "法国",
-      "Morocco": "摩洛哥",
-      "MAR": "摩洛哥"
+      "France": {"zh": "法国", "en": "France"},
+      "FRA": {"zh": "法国", "en": "France"},
+      "Morocco": {"zh": "摩洛哥", "en": "Morocco"},
+      "MAR": {"zh": "摩洛哥", "en": "Morocco"}
     },
     "team_colors": {
       "France": "#0055A4",
@@ -83,16 +87,25 @@
       "MAR": "#C1272D"
     },
     "player_names": {
-      "Kylian Mbappé": "姆巴佩",
-      "Ousmane Dembélé": "登贝莱",
-      "Désiré Doué": "杜埃",
-      "Achraf Hakimi": "阿什拉夫",
-      "Yassine Bounou": "布努"
+      "Kylian Mbappé": {"zh": "姆巴佩", "en": "Kylian Mbappe"},
+      "Ousmane Dembélé": {"zh": "登贝莱", "en": "Ousmane Dembele"},
+      "Désiré Doué": {"zh": "杜埃", "en": "Desire Doue"},
+      "Achraf Hakimi": {"zh": "阿什拉夫", "en": "Achraf Hakimi"},
+      "Yassine Bounou": {"zh": "布努", "en": "Yassine Bounou"}
     },
     "star_chants": {
-      "Kylian Mbappé": "{name}！{name}！打进去了！法国队的十号站了出来！",
-      "Ousmane Dembélé": "{name}！这一脚打进去了！好球！",
-      "Achraf Hakimi": "{name}！队长站了出来！这球打进去了！"
+      "Kylian Mbappé": {
+        "zh": "{name}！{name}！打进去了！法国队的十号站了出来！",
+        "en": "{name}! {name}! He scores! France's number {number} delivers!"
+      },
+      "Ousmane Dembélé": {
+        "zh": "{name}！这一脚打进去了！好球！",
+        "en": "{name} scores! What a finish!"
+      },
+      "Achraf Hakimi": {
+        "zh": "{name}！队长站了出来！这球打进去了！",
+        "en": "{name}! The captain steps up and scores!"
+      }
     }
   },
   "websocket_auth_placeholder": {
@@ -103,7 +116,7 @@
   "markets": [
     {
       "ticker": "KXEXAMPLE-26JUL09-ARG",
-      "label": "阿根廷晋级",
+      "label": {"zh": "阿根廷晋级", "en": "Argentina to advance"},
       "side_i_care": "yes",
       "alert_move_cents": 3,
       "speak_move_cents": 5,
@@ -114,7 +127,7 @@
     },
     {
       "ticker": "KXEXAMPLE-26JUL09-BRA",
-      "label": "巴西夺冠",
+      "label": {"zh": "巴西夺冠", "en": "Brazil to win"},
       "side_i_care": "yes",
       "alert_move_cents": 3,
       "speak_move_cents": 5,
@@ -123,7 +136,7 @@
     },
     {
       "ticker": "KXEXAMPLE-26JUL09-ENG",
-      "label": "英格兰夺冠",
+      "label": {"zh": "英格兰夺冠", "en": "England to win"},
       "side_i_care": "yes",
       "alert_move_cents": 3,
       "speak_move_cents": 5,

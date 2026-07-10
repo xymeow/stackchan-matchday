@@ -4,7 +4,7 @@ import Net from 'net'
 import Time from 'time'
 
 export const MOD_NAME = 'stackchan_matchday'
-export const MOD_VERSION = '1.0.0'
+export const MOD_VERSION = '1.2.6'
 export const PREF_DOMAIN = 'stackchan'
 
 export const HTTP_PORT = 80
@@ -20,7 +20,8 @@ export const DEFAULT_POWER_IDLE_MS = 30000
 export const POWER_CHECK_INTERVAL_MS = 5000
 
 export const TICKER_HEIGHT = 36
-export const PK_BAR_HEIGHT = 40
+export const PK_BAR_TOP = 18
+export const PK_BAR_HEIGHT = 36
 export const FLAG_WIDTH = 24
 export const FLAG_HEIGHT = 20
 
@@ -55,6 +56,7 @@ export const state = {
   ticker: '',
   probabilityBar: {
     visible: false,
+    position: 'top',
     leftFlag: '',
     leftPercent: 50,
     leftColor: '#2457a6',
@@ -65,8 +67,25 @@ export const state = {
   setup: {
     visible: false,
     url: '',
+    trigger: {
+      available: false,
+      sources: [],
+      lastSource: '',
+      lastTriggeredTicks: 0,
+      // Live view of the raw Si12T top-bar detector, for threshold tuning
+      // over /api/status without reflashing.
+      touch: {
+        intensity: 0,
+        position: 0,
+        active: false,
+        taps: 0,
+        lastTapMs: 0,
+        lastDrift: 0,
+      },
+    },
   },
   matchSetup: {
+    language: 'zh',
     options: [],
     current: {},
     pending: null,

@@ -10,3 +10,8 @@ config/kalshi_watchlist.local.json
 # CJK font binaries are prepared locally, never committed (license).
 host/cjk-font/*.ttf
 host/cjk-font/*.bf4
+
+# mcrun/xsl droppings
+mc.xs.c
+mc.xs.h
+mc.xsi

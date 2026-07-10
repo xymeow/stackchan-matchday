@@ -6,6 +6,7 @@
     "matchday/ui": "./ui",
     "matchday/audio": "./audio",
     "matchday/commands": "./commands",
+    "matchday/http-server-safe": "./http-server-safe",
     "matchday/web": "./web"
   },
   "resources": {

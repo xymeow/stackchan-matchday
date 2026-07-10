@@ -6,6 +6,7 @@
 // module; every clip id from the legacy voice pack maps to a short tone
 // pattern so existing watcher configs keep working.
 import Modules from 'modules'
+import { asyncWait } from 'stackchan-util'
 import Timer from 'timer'
 import {
   clamp,
@@ -193,8 +194,8 @@ export function executeTtsCommand(ttsCommand) {
 }
 
 // ---------------------------------------------------------------------------
-// Celebrations: safe-amplitude head dance + head light + voice, sequential to
-// keep peak memory low on CoreS3.
+// Celebrations: safe-amplitude head dance + head light + voice. Remote speech
+// starts with the first pose so the reaction feels like one coordinated event.
 
 let topLightTimer
 
@@ -234,11 +235,13 @@ const WIN_POSES = [
 ]
 
 const LOSE_POSES = [
-  { yaw: -8, pitch: 10, seconds: 0.35 },
-  { yaw: 8, pitch: 12, seconds: 0.35 },
-  { yaw: -7, pitch: 13, seconds: 0.35 },
-  { yaw: 7, pitch: 14, seconds: 0.35 },
-  { yaw: 0, pitch: 11, seconds: 0.4 },
+  // CoreS3's SCServo driver clamps pitch at +10 degrees. Keep the whole
+  // dejected nod inside that range so each step remains distinct.
+  { yaw: -8, pitch: 6, seconds: 0.35 },
+  { yaw: 8, pitch: 8, seconds: 0.35 },
+  { yaw: -7, pitch: 10, seconds: 0.35 },
+  { yaw: 7, pitch: 9, seconds: 0.35 },
+  { yaw: 0, pitch: 8, seconds: 0.4 },
   { yaw: 0, pitch: 0, seconds: 0.3 },
 ]
 
@@ -252,61 +255,100 @@ async function runCelebration(robot, { label, poses, emotion, mouth, light, blin
   const previousPose = { ...state.pose }
   const resumeIdleLook = state.idle.look
   const idleIntervalMs = state.idle.intervalMs
+  let voiceOutcomePromise
+  let operationError
+  let restoreError
 
   try {
-    stopIdleLook(robot, false)
-    robot.setEmotion(emotion)
-    state.emotion = emotion
-    robot.setMouthOpen(mouth)
-    state.mouth = mouth
-    blinkHeadLight(robot, r, g, b, blinkMs, blinkRestoreMs)
-    await robot.setTorque(true)
-    state.torque = true
+    try {
+      stopIdleLook(robot, false)
+      robot.setEmotion(emotion)
+      state.emotion = emotion
+      robot.setMouthOpen(mouth)
+      state.mouth = mouth
+      blinkHeadLight(robot, r, g, b, blinkMs, blinkRestoreMs)
+      await robot.setTorque(true)
+      state.torque = true
+      // Attach both resolve and reject handlers before starting motion. A
+      // remote TTS constructor/stream failure can therefore never become an
+      // unhandled rejection while the pose loop is running.
+      voiceOutcomePromise = Promise.resolve()
+        .then(() => voice())
+        .then(
+          (result) => ({ result }),
+          (error) => ({ error }),
+        )
 
-    for (const pose of poses) {
-      await robot.setPose(
-        {
-          rotation: {
-            y: toRadians(pose.yaw),
-            p: toRadians(pose.pitch),
-            r: 0,
+      for (const pose of poses) {
+        await robot.setPose(
+          {
+            rotation: {
+              y: toRadians(pose.yaw),
+              p: toRadians(pose.pitch),
+              r: 0,
+            },
           },
-        },
-        pose.seconds,
-      )
-      state.pose = { yaw: pose.yaw, pitch: pose.pitch, roll: 0 }
+          pose.seconds,
+        )
+        state.pose = { yaw: pose.yaw, pitch: pose.pitch, roll: 0 }
+        // setPose writes the servo goal time but resolves before that time has
+        // elapsed. Keep every target visible before sending the next one.
+        await asyncWait(Math.round(pose.seconds * 1000))
+      }
+    } catch (error) {
+      operationError = error
+    } finally {
+      // Restore the physical mechanism before waiting for LAN audio. The
+      // tts-remote stream has no hard timeout, so speech must never hold the
+      // servos energized or leave the head between poses.
+      try {
+        await robot.setPose(
+          {
+            rotation: {
+              y: toRadians(previousPose.yaw),
+              p: toRadians(previousPose.pitch),
+              r: toRadians(previousPose.roll),
+            },
+          },
+          0.25,
+        )
+        state.pose = previousPose
+        await asyncWait(250)
+      } catch (error) {
+        restoreError = `pose: ${error}`
+      }
+      if (!previousTorque) {
+        try {
+          await robot.setTorque(false)
+          state.torque = false
+        } catch (error) {
+          restoreError = restoreError
+            ? `${restoreError}; torque: ${error}`
+            : `torque: ${error}`
+        }
+      }
     }
 
-    const voiceResult = await voice()
-    if (!voiceResult.ok) return voiceResult
+    if (operationError || restoreError) {
+      const error = [operationError, restoreError && `restore ${restoreError}`]
+        .filter(Boolean)
+        .join('; ')
+      state.lastError = `${label}: ${error}`
+      return { ok: false, text: `error ${label}: ${error}\n` }
+    }
+
+    const voiceOutcome = await voiceOutcomePromise
+    if (voiceOutcome.error) {
+      state.lastError = `${label} voice: ${voiceOutcome.error}`
+      return { ok: false, text: `error ${label} voice: ${voiceOutcome.error}\n` }
+    }
+    if (!voiceOutcome.result.ok) return voiceOutcome.result
     return { ok: true, text: `ok ${label} ${r} ${g} ${b}\n` }
-  } catch (error) {
-    state.lastError = `${label}: ${error}`
-    return { ok: false, text: `error ${label}: ${error}\n` }
   } finally {
     robot.setMouthOpen(0)
     state.mouth = 0
-    try {
-      await robot.setPose(
-        {
-          rotation: {
-            y: toRadians(previousPose.yaw),
-            p: toRadians(previousPose.pitch),
-            r: toRadians(previousPose.roll),
-          },
-        },
-        0.25,
-      )
-      state.pose = previousPose
-      if (!previousTorque) {
-        await robot.setTorque(false)
-        state.torque = false
-      }
-    } catch (restoreError) {
-      state.lastError = `celebration restore: ${restoreError}`
-    }
-    if (resumeIdleLook) startIdleLook(robot, idleIntervalMs)
     state.celebrating = false
+    if (resumeIdleLook) startIdleLook(robot, idleIntervalMs)
   }
 }
 
@@ -324,7 +366,7 @@ export function celebrateGoal(robot, r, g, b, speech = '') {
   })
 }
 
-export function celebrateResult(robot, outcome, r, g, b) {
+export function celebrateResult(robot, outcome, r, g, b, speech = '') {
   const won = outcome === 'win'
   noteActivity('celebrate')
   return runCelebration(robot, {
@@ -335,6 +377,10 @@ export function celebrateResult(robot, outcome, r, g, b) {
     light: [clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255)],
     blinkMs: won ? 100 : 280,
     blinkRestoreMs: won ? 4200 : 3600,
-    voice: () => playFanClip(robot, won ? 'favorite-win' : 'favorite-lose'),
+    voice: () => (
+      speech
+        ? playSpeechOrClip(robot, speech, won ? 'favorite-win' : 'favorite-lose')
+        : playFanClip(robot, won ? 'favorite-win' : 'favorite-lose')
+    ),
   })
 }

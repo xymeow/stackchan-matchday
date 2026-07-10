@@ -58,12 +58,13 @@ KALSHI_EVENT = {
 }
 
 
-def service(path: Path) -> setup.MatchSetupService:
+def service(path: Path, language: str = "zh") -> setup.MatchSetupService:
     return setup.MatchSetupService(
         path,
         "https://kalshi.example/trade-api/v2",
         "https://espn.example/soccer",
         "fifa.world",
+        language=language,
     )
 
 
@@ -139,21 +140,50 @@ class MatchSetupTests(unittest.TestCase):
                             "espn_event_id": "760511",
                             "favorite_team": "Spain",
                             "position_team": "",
+                            "language": "en",
                         }
                     )
             updated = json.loads(path.read_text(encoding="utf-8"))
+            english_status = instance.current_status()
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["language"], "en")
+        self.assertEqual(result["label"], "Spain vs Belgium")
+        self.assertEqual(updated["language"], "en")
         self.assertEqual(updated["espn"]["event_id"], "760511")
         self.assertEqual(updated["espn"]["starts_at"], "2026-07-10T19:00:00+00:00")
         self.assertEqual(updated["espn"]["favorite_team"], "Spain")
         self.assertEqual(updated["espn"]["position_team"], "")
+        self.assertEqual(
+            updated["espn"]["label"],
+            {"zh": "西班牙 vs 比利时", "en": "Spain vs Belgium"},
+        )
+        self.assertEqual(
+            updated["espn"]["team_names"]["Spain"],
+            {"zh": "西班牙", "en": "Spain"},
+        )
         self.assertEqual(updated["probability_bar"]["left_flag"], "es")
         self.assertEqual(updated["probability_bar"]["right_flag"], "be")
         self.assertEqual(len(updated["markets"]), 2)
+        self.assertEqual(
+            updated["markets"][0]["label"],
+            {"zh": "西班牙晋级", "en": "Spain to advance"},
+        )
+        self.assertIn("西班牙", updated["markets"][0]["goal_signal_up_speech"]["zh"])
+        self.assertIn("Spain", updated["markets"][0]["goal_signal_up_speech"]["en"])
+        self.assertIn("Belgium", updated["markets"][0]["goal_signal_down_speech"]["en"])
         self.assertTrue(updated["markets"][0]["alerts_enabled"])
         self.assertFalse(updated["markets"][1]["alerts_enabled"])
+        self.assertEqual(english_status["label"], "Spain vs Belgium")
+        self.assertEqual(english_status["favorite_team"], "Spain")
+        self.assertEqual(english_status["language"], "en")
         self.assertTrue(instance.take_reload_requested())
+
+    def test_apply_rejects_unsupported_language_before_fetching(self):
+        instance = service(Path("unused.json"))
+
+        with self.assertRaisesRegex(ValueError, "language must be one of: zh, en"):
+            instance.apply_selection({"language": "fr"})
 
     def test_setup_page_contains_mobile_form_controls(self):
         page = setup.setup_page_html()
@@ -161,6 +191,9 @@ class MatchSetupTests(unittest.TestCase):
         self.assertIn('name="viewport"', page)
         self.assertIn('id="favorite"', page)
         self.assertIn('id="position"', page)
+        self.assertIn('name="language"', page)
+        self.assertIn('value="zh"', page)
+        self.assertIn('value="en"', page)
         self.assertIn('id="apply"', page)
 
 

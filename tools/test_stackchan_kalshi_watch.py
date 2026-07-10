@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -50,6 +52,125 @@ def espn_config():
         },
         star_chants={"Kylian Mbappé": "{name}！{name}！打进去了！"},
     )
+
+
+def english_espn_config():
+    config = espn_config()
+    config.language = "en"
+    config.label = "France vs Morocco"
+    config.team_names = {
+        "France": "France",
+        "FRA": "France",
+        "Morocco": "Morocco",
+        "MAR": "Morocco",
+    }
+    config.player_names = {
+        "Kylian Mbappé": "Kylian Mbappe",
+        "Ousmane Dembélé": "Ousmane Dembele",
+        "Yassine Bounou": "Yassine Bounou",
+    }
+    config.star_chants = {
+        "Kylian Mbappé": "{name}! {name}! He scores! France's number {number} delivers!",
+    }
+    return config
+
+
+def contains_han(value: str) -> bool:
+    return any("\u3400" <= character <= "\u9fff" for character in value)
+
+
+class ConfigLocalizationTests(unittest.TestCase):
+    def localized_config(self) -> dict:
+        return {
+            "language": "en",
+            "mac_voice": {"zh": "Tingting", "en": "Samantha"},
+            "espn": {
+                "label": {"zh": "法国 vs 摩洛哥", "en": "France vs Morocco"},
+                "team_names": {
+                    "France": {"zh": "法国", "en": "France"},
+                    "Morocco": {"zh": "摩洛哥", "en": "Morocco"},
+                },
+                "player_names": {
+                    "Kylian Mbappé": {"zh": "姆巴佩", "en": "Kylian Mbappe"},
+                },
+                "star_chants": {
+                    "Kylian Mbappé": {"zh": "进球了", "en": "What a goal"},
+                },
+            },
+            "markets": [
+                {
+                    "ticker": "TEST",
+                    "label": {"zh": "法国晋级", "en": "France to advance"},
+                }
+            ],
+        }
+
+    def test_localized_leaves_follow_config_language_and_cli_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(self.localized_config(), ensure_ascii=False), encoding="utf-8")
+
+            english = watcher.load_config(path)
+            chinese = watcher.load_config(path, "zh-CN")
+
+        self.assertEqual(english.language, "en")
+        self.assertEqual(english.mac_voice, "Samantha")
+        self.assertEqual(english.espn.label, "France vs Morocco")
+        self.assertEqual(english.espn.player_names["Kylian Mbappé"], "Kylian Mbappe")
+        self.assertEqual(english.markets[0].label, "France to advance")
+        self.assertEqual(chinese.language, "zh")
+        self.assertEqual(chinese.mac_voice, "Tingting")
+        self.assertEqual(chinese.espn.label, "法国 vs 摩洛哥")
+        self.assertEqual(chinese.markets[0].label, "法国晋级")
+
+    def test_legacy_strings_remain_literal(self):
+        raw = self.localized_config()
+        raw["language"] = "en"
+        raw["espn"]["label"] = "旧中文标签"
+        raw["markets"][0]["label"] = "旧盘口"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            config = watcher.load_config(path)
+
+        self.assertEqual(config.espn.label, "旧中文标签")
+        self.assertEqual(config.markets[0].label, "旧盘口")
+
+    def test_invalid_localized_leaf_has_config_path(self):
+        raw = self.localized_config()
+        raw["espn"]["label"] = {"en": ["bad"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(watcher.ConfigError, "espn.label.en"):
+                watcher.load_config(path)
+
+    def test_missing_selected_locale_uses_semantic_fallbacks_not_other_language(self):
+        raw = self.localized_config()
+        raw["espn"]["label"] = {"zh": "法国 vs 摩洛哥"}
+        raw["espn"]["team_names"]["France"] = {"zh": "法国"}
+        raw["markets"][0]["label"] = {"zh": "法国晋级"}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            config = watcher.load_config(path)
+
+        self.assertEqual(config.espn.label, "")
+        self.assertNotIn("France", config.espn.team_names)
+        self.assertEqual(config.markets[0].label, "TEST")
+
+    def test_device_setup_sync_uses_effective_service_language(self):
+        config = watcher.WatchConfig(
+            stackchan_transport="http",
+            stackchan_host="192.0.2.1",
+            language="zh",
+        )
+        current = {"language": "en", "label": "Spain vs Belgium"}
+
+        with patch.object(watcher, "post_json") as post:
+            watcher.sync_device_match_setup(config, [], current)
+
+        self.assertEqual(post.call_args.args[1]["language"], "en")
 
 
 class ESPNAlertTests(unittest.TestCase):
@@ -597,6 +718,247 @@ class ESPNAlertTests(unittest.TestCase):
         self.assertIn("姆巴佩可能有伤", alert.speech)
 
 
+class EnglishAlertTests(unittest.TestCase):
+    def test_player_number_is_grammatical_inside_possessive_templates(self):
+        player = watcher.MatchPlayer(
+            "4", "Dayot Upamecano", "D. Upamecano", "4", "France", "FRA"
+        )
+
+        self.assertEqual(
+            watcher.player_announcement(english_espn_config(), player),
+            "number 4 Dayot Upamecano",
+        )
+
+    def test_free_kick_without_location_has_clean_spacing(self):
+        item = {
+            "sequence": 1,
+            "text": "Morocco wins a free kick.",
+            "play": {
+                "type": {"type": "foul"},
+                "team": {"displayName": "France"},
+            },
+        }
+
+        alert = watcher.alert_for_espn_commentary(
+            item,
+            match_snapshot([item]),
+            english_espn_config(),
+        )
+
+        self.assertEqual(
+            alert.balloon,
+            "Free kick to Morocco | France 1-0 Morocco",
+        )
+        self.assertEqual(
+            alert.speech,
+            "Free kick to Morocco. The player draws the foul.",
+        )
+
+    def test_representative_event_catalog_has_no_hardcoded_chinese(self):
+        config = english_espn_config()
+        config.announce_fouls = True
+        cases = [
+            (
+                "drinks_break",
+                {
+                    "sequence": 1,
+                    "text": "Delay in match for a drinks break.",
+                    "play": {"type": {"type": "start-delay"}},
+                },
+            ),
+            (
+                "penalty_scored",
+                {
+                    "sequence": 2,
+                    "text": "Penalty scored. France.",
+                    "play": {
+                        "type": {"type": "penalty---scored"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "penalty_missed",
+                {
+                    "sequence": 3,
+                    "text": "Penalty missed. France.",
+                    "play": {
+                        "type": {"type": "penalty---missed"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "penalty_awarded",
+                {
+                    "sequence": 4,
+                    "text": "Penalty awarded to France.",
+                    "play": {
+                        "type": {"type": "penalty-awarded"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "goal",
+                {
+                    "sequence": 5,
+                    "text": "Goal! France 1, Morocco 0.",
+                    "play": {
+                        "type": {"type": "goal"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "substitution",
+                {
+                    "sequence": 6,
+                    "text": "Substitution, France.",
+                    "play": {
+                        "type": {"type": "substitution"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "woodwork",
+                {
+                    "sequence": 7,
+                    "text": "France hits the post from the centre of the box.",
+                    "play": {
+                        "type": {"type": "hit-woodwork"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "shot_saved",
+                {
+                    "sequence": 8,
+                    "text": "Attempt saved. France header from very close range is saved.",
+                    "play": {
+                        "type": {"type": "shot-on-target"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "close_miss",
+                {
+                    "sequence": 9,
+                    "text": "Attempt missed. France shot is close, but misses to the left.",
+                    "play": {
+                        "type": {"type": "shot-off-target"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "blocked_shot",
+                {
+                    "sequence": 10,
+                    "text": "Attempt blocked. France shot from the centre of the box is blocked.",
+                    "play": {
+                        "type": {"type": "shot-blocked"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "red_card",
+                {
+                    "sequence": 11,
+                    "text": "France is shown the red card.",
+                    "play": {
+                        "type": {"type": "red-card"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "yellow_card",
+                {
+                    "sequence": 12,
+                    "text": "France is shown the yellow card.",
+                    "play": {
+                        "type": {"type": "yellow-card"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "corner",
+                {
+                    "sequence": 13,
+                    "text": "Corner, France.",
+                    "play": {
+                        "type": {"type": "corner-awarded"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "free_kick",
+                {
+                    "sequence": 14,
+                    "text": "Morocco wins a free kick on the right wing.",
+                    "play": {
+                        "type": {"type": "foul"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "foul",
+                {
+                    "sequence": 15,
+                    "text": "Foul by France.",
+                    "play": {
+                        "type": {"type": "foul"},
+                        "team": {"displayName": "France"},
+                    },
+                },
+            ),
+            (
+                "second_half",
+                {
+                    "sequence": 16,
+                    "text": "Second Half begins France 1, Morocco 0.",
+                    "play": {"type": {"type": "kickoff"}},
+                },
+            ),
+            (
+                "full_time",
+                {
+                    "sequence": 17,
+                    "text": "Match ends, France 2, Morocco 0.",
+                    "play": {"type": {"type": "full-time"}},
+                },
+            ),
+        ]
+
+        alerts = {}
+        for name, item in cases:
+            snapshot = match_snapshot(
+                [item],
+                status="post" if name == "full_time" else "in",
+                home_score="2" if name == "full_time" else "1",
+            )
+            alert = watcher.alert_for_espn_commentary(item, snapshot, config)
+            with self.subTest(event=name):
+                self.assertIsNotNone(alert)
+                self.assertFalse(contains_han(alert.balloon))
+                self.assertFalse(contains_han(alert.speech))
+                self.assertFalse(contains_han(alert.label))
+            alerts[name] = alert
+
+        self.assertEqual(alerts["free_kick"].priority, 740)
+        self.assertIn("on the right wing", alerts["free_kick"].speech)
+        self.assertTrue(alerts["full_time"].is_final)
+        self.assertTrue(watcher.is_final_status_alert(alerts["full_time"]))
+
+
 class PersistentDisplayTests(unittest.TestCase):
     def test_finalized_outcomes_use_settlement_probability_not_empty_book_midpoint(self):
         france = watcher.MarketConfig("FRA", "法国晋级")
@@ -674,6 +1036,69 @@ class PersistentDisplayTests(unittest.TestCase):
 
 
 class MarketAlertTests(unittest.TestCase):
+    def test_english_price_and_near_close_speech_use_singular_units(self):
+        market = watcher.MarketConfig(
+            "FRA",
+            "France to advance",
+            language="en",
+            alert_move_cents=1,
+            speak_move_cents=1,
+            min_seconds_between_alerts=0,
+        )
+        now = datetime.now(timezone.utc)
+        snapshot = watcher.MarketSnapshot(
+            "FRA",
+            "France to advance",
+            "active",
+            "E",
+            0,
+            2,
+            98,
+            100,
+            1,
+            "",
+            now + timedelta(seconds=30),
+        )
+        state = watcher.MarketState(
+            last_alert_mid_cents=0,
+            last_observed_mid_cents=0,
+        )
+
+        alerts = watcher.evaluate_market(snapshot, market, state, now)
+        near_close = next(alert for alert in alerts if alert.kind == "near_close")
+        price_move = next(alert for alert in alerts if alert.kind == "price_move")
+
+        self.assertIn("1 minute", near_close.speech)
+        self.assertNotIn("1 minutes", near_close.speech)
+        self.assertIn("midpoint is 1 cent", price_move.speech)
+        self.assertIn("by 1 cent", price_move.speech)
+
+    def test_default_english_goal_signal_contains_no_chinese(self):
+        market = watcher.MarketConfig(
+            "FRA",
+            "France to advance",
+            language="en",
+            min_seconds_between_alerts=0,
+            goal_signal_enabled=True,
+            goal_signal_move_cents=5,
+            goal_signal_cooldown_seconds=1,
+        )
+        snapshot = watcher.MarketSnapshot(
+            "FRA", "France to advance", "active", "E", 97, 99, 1, 3, 98, "", None
+        )
+        state = watcher.MarketState(last_observed_mid_cents=90)
+
+        alerts = watcher.evaluate_market(
+            snapshot,
+            market,
+            state,
+            datetime.now(timezone.utc),
+        )
+
+        signal = next(alert for alert in alerts if alert.kind == "market_goal_signal")
+        self.assertFalse(contains_han(signal.balloon))
+        self.assertFalse(contains_han(signal.speech))
+
     def test_inactive_market_freezes_last_trade_without_goal_signal(self):
         market = watcher.MarketConfig(
             "FRA",
@@ -776,6 +1201,78 @@ class MarketAlertTests(unittest.TestCase):
 
 
 class AlertDeliveryTests(unittest.TestCase):
+    def test_english_schedule_uses_natural_date_prepositions(self):
+        starts_at = "2026-07-10T19:00:00+00:00"
+        local_start = watcher.parse_datetime(starts_at).astimezone()
+        month = (
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        )[local_start.month - 1]
+
+        alert = watcher.scheduled_setup_alert(
+            {
+                "event_id": "760511",
+                "starts_at": starts_at,
+                "label": "Spain vs Belgium",
+            },
+            "http://192.0.2.10:8788/setup",
+            "en",
+        )
+
+        self.assertIn(
+            f"kicking off on {month} {local_start.day} at {local_start:%H:%M}",
+            alert.speech,
+        )
+        self.assertFalse(contains_han(alert.balloon))
+        self.assertFalse(contains_han(alert.speech))
+
+    def test_english_setup_confirmation_uses_complete_sentences(self):
+        config = watcher.WatchConfig(
+            language="en",
+            espn=english_espn_config(),
+        )
+
+        alert = watcher.setup_confirmation_alert(config)
+
+        self.assertEqual(
+            alert.speech,
+            "Now watching France vs Morocco. Supporting France. "
+            "Position: France. Monitoring is active.",
+        )
+
+    def test_feedback_idle_wait_tracks_motion_tts_and_light(self):
+        config = watcher.WatchConfig(stackchan_host="192.0.2.1")
+        statuses = [
+            {"celebrating": True, "tts": {"busy": False}, "light": {"on": True}},
+            {"celebrating": False, "tts": {"busy": True}, "light": {"on": True}},
+            {"celebrating": False, "tts": {"busy": False}, "light": {"on": True}},
+            {"celebrating": False, "tts": {"busy": False}, "light": {"on": False}},
+        ]
+
+        with patch.object(watcher, "http_json", side_effect=statuses) as fetch_status:
+            with patch.object(watcher.time, "sleep"):
+                idle = watcher.wait_for_stackchan_feedback_idle(
+                    config,
+                    timeout=5,
+                    include_light=True,
+                )
+
+        self.assertTrue(idle)
+        self.assertEqual(fetch_status.call_count, 4)
+
+    def test_pre_dispatch_idle_wait_does_not_block_on_persistent_light(self):
+        config = watcher.WatchConfig(stackchan_host="192.0.2.1")
+        status = {
+            "celebrating": False,
+            "tts": {"busy": False},
+            "light": {"on": True},
+        }
+
+        with patch.object(watcher, "http_json", return_value=status):
+            idle = watcher.wait_for_stackchan_feedback_idle(config, timeout=5)
+
+        self.assertTrue(idle)
+
     def test_schedule_prompt_uses_setup_qr_and_dynamic_voice(self):
         config = watcher.WatchConfig(
             voice_transport="clip",
@@ -787,7 +1284,7 @@ class AlertDeliveryTests(unittest.TestCase):
                 "starts_at": "2026-07-10T19:00:00+00:00",
                 "label": "西班牙 vs 比利时",
             },
-            "http://192.168.0.117:8788/setup",
+            "http://192.0.2.10:8788/setup",
         )
         output = io.StringIO()
 
@@ -796,7 +1293,7 @@ class AlertDeliveryTests(unittest.TestCase):
 
         commands = output.getvalue()
         self.assertIn(
-            "dry-run stackchan: setup show http://192.168.0.117:8788/setup",
+            "dry-run stackchan: setup show http://192.0.2.10:8788/setup",
             commands,
         )
         self.assertIn("dry-run stackchan: say 下一场，西班牙 vs 比利时", commands)
@@ -813,7 +1310,7 @@ class AlertDeliveryTests(unittest.TestCase):
                 "starts_at": "2026-07-10T19:00:00+00:00",
                 "label": "西班牙 vs 比利时",
             },
-            "http://192.168.0.117:8788/setup",
+            "http://192.0.2.10:8788/setup",
         )
         output = io.StringIO()
 
@@ -847,7 +1344,10 @@ class AlertDeliveryTests(unittest.TestCase):
             watcher.send_alert(config, alert, quiet=False, dry_run=True, no_say=False)
 
         commands = output.getvalue()
-        self.assertIn("dry-run stackchan: celebrate result win 0 85 164", commands)
+        self.assertIn(
+            "dry-run stackchan: celebrate result win 0 85 164 比赛结束。法国二比零摩洛哥。",
+            commands,
+        )
         self.assertNotIn("light flash", commands)
         self.assertNotIn("clip favorite-win", commands)
 
@@ -878,6 +1378,36 @@ class AlertDeliveryTests(unittest.TestCase):
         self.assertIn("dry-run stackchan: light flash 0 85 164", commands)
         self.assertIn("dry-run stackchan: clip favorite-lose", commands)
         self.assertNotIn("celebrate result", commands)
+
+    def test_legacy_result_celebration_omits_unsupported_speech_argument(self):
+        config = watcher.WatchConfig(
+            voice_transport="clip",
+            result_celebration_commands=True,
+            result_speech_commands=False,
+        )
+        alert = watcher.Alert(
+            ticker="ESPN:760510",
+            label="法国 vs 摩洛哥",
+            kind="espn_status",
+            priority=500,
+            face="happy",
+            balloon="比赛结束 | 法国 2 - 0 摩洛哥",
+            speech="比赛结束。法国二比零摩洛哥。",
+            detail="test",
+            clip_id="favorite-win",
+            light_rgb=(0, 85, 164),
+            celebration="result-win",
+        )
+        output = io.StringIO()
+
+        with redirect_stdout(output):
+            watcher.send_alert(config, alert, quiet=False, dry_run=True, no_say=False)
+
+        self.assertIn(
+            "dry-run stackchan: celebrate result win 0 85 164\n",
+            output.getvalue(),
+        )
+        self.assertNotIn("比赛结束。法国二比零摩洛哥。", output.getvalue())
 
     def test_delivery_failure_is_reported_for_queue_retry(self):
         config = watcher.WatchConfig(voice_transport="none")
@@ -932,7 +1462,7 @@ class AlertDeliveryTests(unittest.TestCase):
         )
         self.assertNotIn("clip ", commands)
 
-    def test_personalized_goal_sequences_local_celebration_then_dynamic_speech(self):
+    def test_personalized_goal_uses_atomic_voice_motion_and_light_command(self):
         config = watcher.WatchConfig(voice_transport="clip")
         alert = watcher.Alert(
             ticker="ESPN:760510",
@@ -955,9 +1485,12 @@ class AlertDeliveryTests(unittest.TestCase):
 
         commands = output.getvalue()
         self.assertIn("dry-run stackchan: balloon temp 8000 进球测试", commands)
-        self.assertIn("dry-run stackchan: celebrate goal 0 85 164", commands)
-        self.assertIn("dry-run stackchan: say 姆巴佩！姆巴佩！打进去了！", commands)
-        self.assertNotIn("celebrate say", commands)
+        self.assertIn(
+            "dry-run stackchan: celebrate say 0 85 164 姆巴佩！姆巴佩！打进去了！",
+            commands,
+        )
+        self.assertNotIn("dry-run stackchan: celebrate goal", commands)
+        self.assertNotIn("dry-run stackchan: say ", commands)
         self.assertNotIn("light flash", commands)
         self.assertNotIn("clip favorite-goal", commands)
 

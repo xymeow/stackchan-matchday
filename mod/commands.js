@@ -66,7 +66,7 @@ const COMMAND_USAGE = [
   'clip <id>|list',
   'voice <fallback-clip-id> <text>',
   'celebrate goal <r> <g> <b>',
-  'celebrate result win|lose <r> <g> <b>',
+  'celebrate result win|lose <r> <g> <b> [text]',
   'celebrate say <r> <g> <b> <text>',
   'pose <yaw-deg> <pitch-deg> [roll-deg] [seconds]',
   'servo <pan:0..180> <tilt:0..180>',
@@ -116,6 +116,7 @@ export function statusPayload() {
     pose: state.pose,
     torque: state.torque,
     mouth: state.mouth,
+    light: state.light,
     idle: state.idle,
     screen: state.screen,
     tts: ttsPayload(),
@@ -152,6 +153,7 @@ function diagnosticsPayload(robot) {
     },
     screen: state.screen,
     power: state.power,
+    light: state.light,
     tts: ttsPayload(),
     network: networkPayload(),
     idle: state.idle,
@@ -487,22 +489,23 @@ export async function runCommand(robot, line) {
     if (lower.startsWith('celebrate result ')) {
       const parts = command.substring('celebrate result '.length).trim().split(/\s+/)
       const outcome = parts[0]?.toLowerCase()
-      const values = parts.slice(1).map((value) => Number(value))
+      const values = parts.slice(1, 4).map((value) => Number(value))
+      const message = parts.slice(4).join(' ').trim()
       if (!['win', 'lose'].includes(outcome) || values.length < 3 || values.some((value) => !Number.isFinite(value))) {
-        return { ok: false, text: 'error usage: celebrate result win|lose <r> <g> <b>\n' }
+        return { ok: false, text: 'error usage: celebrate result win|lose <r> <g> <b> [text]\n' }
       }
       if (state.celebrating) {
         return { ok: false, text: 'error celebration already in progress\n' }
       }
       const [red, green, blue] = values.map((value) => Math.round(clamp(value, 0, 255)))
-      startCelebration(celebrateResult(robot, outcome, red, green, blue), 'celebrate result')
+      startCelebration(celebrateResult(robot, outcome, red, green, blue, message), 'celebrate result')
       return { ok: true, text: `ok celebrate result started ${outcome} ${red} ${green} ${blue}\n` }
     }
 
     if (lower === 'celebrate' || lower === 'celebrate goal' || lower === 'celebrate result' || lower === 'celebrate say') {
       return {
         ok: false,
-        text: 'error usage: celebrate goal <r> <g> <b> | celebrate result win|lose <r> <g> <b> | celebrate say <r> <g> <b> <text>\n',
+        text: 'error usage: celebrate goal <r> <g> <b> | celebrate result win|lose <r> <g> <b> [text] | celebrate say <r> <g> <b> <text>\n',
       }
     }
 

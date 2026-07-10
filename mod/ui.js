@@ -14,6 +14,7 @@ import {
   MAX_IDLE_LOOK_INTERVAL_MS,
   MIN_IDLE_LOOK_INTERVAL_MS,
   PK_BAR_HEIGHT,
+  PK_BAR_TOP,
   POWER_CHECK_INTERVAL_MS,
   TICKER_HEIGHT,
   clamp,
@@ -29,7 +30,7 @@ import {
 // otherwise fall back to the stock Stack-chan font. Percent digits render fine
 // either way; CJK balloon text needs the host font commit.
 export const FONT = (() => {
-  for (const candidate of ['StackChanCN-24.bf4', 'StackChanCN-24.fnt']) {
+  for (const candidate of ['StackChanCN-24.fnt', 'StackChanCN-24.bf4']) {
     try {
       new Resource(candidate)
       return 'StackChanCN-24'
@@ -209,6 +210,7 @@ export function showBalloon(robot, message) {
   currentBalloonRobot = robot
   balloonEffect = createBalloonEffect(text)
   robot.renderer.addDecorator(balloonEffect)
+  keepSetupQrOnTop(robot)
   state.balloon = text
 }
 
@@ -303,6 +305,7 @@ export function setTicker(robot, message) {
   } else if (tickerLabel !== undefined) {
     tickerLabel.string = text
   }
+  keepSetupQrOnTop(robot)
   return { ok: true, text: 'ok ticker\n' }
 }
 
@@ -421,7 +424,9 @@ function createProbabilityBarEffect(data) {
     name: 'ProbabilityBar',
     left: 0,
     right: 0,
-    bottom: 0,
+    // The host owns y=0..18 for its status bar and the face starts at y=54.
+    // This strip fits between them; speech balloons stay at the lower edge.
+    top: PK_BAR_TOP,
     height: PK_BAR_HEIGHT,
     active: false,
     contents: [
@@ -435,9 +440,9 @@ function createProbabilityBarEffect(data) {
         width: 2,
         skin: new Skin({ fill: '#ffffff' }),
       }),
-      new Content(null, { name: 'pkLeftFlag', left: 0, top: 10, width: FLAG_WIDTH, height: FLAG_HEIGHT }),
+      new Content(null, { name: 'pkLeftFlag', left: 0, top: 8, width: FLAG_WIDTH, height: FLAG_HEIGHT }),
       new Label(null, { name: 'pkLeftValue', left: 0, top: 0, bottom: 0, width: 30, string: '50' }),
-      new Content(null, { name: 'pkRightFlag', left: 0, top: 10, width: FLAG_WIDTH, height: FLAG_HEIGHT }),
+      new Content(null, { name: 'pkRightFlag', left: 0, top: 8, width: FLAG_WIDTH, height: FLAG_HEIGHT }),
       new Label(null, { name: 'pkRightValue', left: 0, top: 0, bottom: 0, width: 30, string: '50' }),
     ],
     Behavior: ProbabilityBarBehavior,
@@ -457,6 +462,7 @@ export function setProbabilityBar(robot, data) {
   const leftPercent = clamp(Math.round(toNumber(data.leftPercent, 50)), 0, 100)
   const next = {
     visible: true,
+    position: 'top',
     leftFlag: String(data.leftFlag ?? '')
       .trim()
       .toLowerCase(),
@@ -487,6 +493,7 @@ export function setProbabilityBar(robot, data) {
   } else {
     probabilityBarEffect.behavior?.onProbabilityBar?.(probabilityBarEffect, next)
   }
+  keepSetupQrOnTop(robot)
   return { ok: true, text: `ok pkbar ${leftPercent} ${100 - leftPercent}\n` }
 }
 
@@ -496,8 +503,30 @@ export function setProbabilityBar(robot, data) {
 let setupEffect
 let setupRestoreTimer
 
+function keepSetupQrOnTop(robot) {
+  if (setupEffect === undefined) return
+  robot.renderer.removeDecorator(setupEffect)
+  robot.renderer.addDecorator(setupEffect)
+}
+
+const SETUP_QR_TITLE = {
+  zh: '手机扫码设置比赛',
+  en: 'Scan to set up the match',
+}
+
+// Re-render the visible QR overlay (e.g. after a language switch) without
+// resetting its 90-second auto-hide timer.
+export function refreshSetupQr(robot) {
+  if (setupEffect === undefined) return
+  const url = state.setup.url
+  robot.renderer.removeDecorator(setupEffect)
+  setupEffect = createSetupQrEffect(url)
+  robot.renderer.addDecorator(setupEffect)
+}
+
 function createSetupQrEffect(url) {
   const shortUrl = url.replace(/^https?:\/\//, '')
+  const title = SETUP_QR_TITLE[state.matchSetup.language] ?? SETUP_QR_TITLE.zh
   return new Container(null, {
     name: 'MatchSetupQr',
     left: 0,
@@ -512,7 +541,7 @@ function createSetupQrEffect(url) {
         right: 8,
         top: 5,
         height: 28,
-        string: '手机扫码设置比赛',
+        string: title,
         style: new Style({ font: FONT, color: '#17202a', horizontal: 'center', vertical: 'middle' }),
       }),
       new Content(null, {
@@ -566,12 +595,7 @@ export function showSetupQr(robot, value) {
   state.setup.url = url
   setupRestoreTimer = Timer.set(() => {
     setupRestoreTimer = undefined
-    if (setupEffect !== undefined) {
-      robot.renderer.removeDecorator(setupEffect)
-      setupEffect = undefined
-    }
-    state.setup.visible = false
-    state.setup.url = ''
+    hideSetupQr(robot)
   }, 90000)
   return { ok: true, text: `ok setup ${url}\n` }
 }
@@ -660,4 +684,3 @@ export function startIdleLook(robot, intervalMs) {
   update()
   idleLookTimer = Timer.repeat(update, state.idle.intervalMs)
 }
-
