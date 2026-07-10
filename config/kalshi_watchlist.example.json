@@ -1,0 +1,134 @@
+{
+  "stackchan_host": "stackchan.local",
+  "stackchan_transport": "http",
+  "stackchan_serial_port": "/dev/cu.usbmodem101",
+  "stackchan_serial_baud": 115200,
+  "voice_transport": "clip",
+  "mac_voice": "Tingting",
+  "mac_say_rate": 185,
+  "kalshi_base_url": "https://external-api.kalshi.com/trade-api/v2",
+  "poll_seconds": 10,
+  "adaptive_polling": {
+    "enabled": true,
+    "warmup_minutes_before": 90,
+    "full_speed_minutes_before": 15,
+    "far_kalshi_seconds": 300,
+    "far_espn_seconds": 300,
+    "warmup_kalshi_seconds": 30,
+    "warmup_espn_seconds": 60,
+    "post_kalshi_seconds": 60,
+    "post_espn_seconds": 300
+  },
+  "max_alerts_per_cycle": 2,
+  "startup_summary_on_watch": true,
+  "speak_startup_summary": false,
+  "ticker_enabled": true,
+  "display_refresh_seconds": 30,
+  "setup_server": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 8788,
+    "public_base_url": "",
+    "kalshi_series_ticker": "KXWCADVANCE",
+    "lookahead_days": 10,
+    "refresh_seconds": 900,
+    "prompt_minutes_before": 90
+  },
+  "probability_bar": {
+    "enabled": true,
+    "market_ticker": "KXEXAMPLE-26JUL09-ARG",
+    "side": "yes",
+    "left_flag": "ar",
+    "left_color": "#75AADB",
+    "right_flag": "br",
+    "right_color": "#009C3B"
+  },
+  "alert_balloon_seconds": 8,
+  "quiet_hours": {
+    "enabled": true,
+    "start": "23:30",
+    "end": "08:00"
+  },
+  "espn": {
+    "enabled": false,
+    "event_id": "760510",
+    "league": "fifa.world",
+    "label": "法国 vs 摩洛哥",
+    "starts_at": "",
+    "poll_seconds": 2,
+    "favorite_team": "France",
+    "position_team": "",
+    "favorite_goal_celebration": true,
+    "startup_replay_critical_seconds": 180,
+    "announce_status": true,
+    "announce_fouls": false,
+    "announce_opponent_free_kicks": true,
+    "announce_yellow_cards": true,
+    "announce_corners": true,
+    "announce_player_names": true,
+    "announce_shots_on_target": true,
+    "announce_close_misses": true,
+    "announce_dangerous_blocks": true,
+    "announce_substitutions": true,
+    "team_names": {
+      "France": "法国",
+      "FRA": "法国",
+      "Morocco": "摩洛哥",
+      "MAR": "摩洛哥"
+    },
+    "team_colors": {
+      "France": "#0055A4",
+      "FRA": "#0055A4",
+      "Morocco": "#C1272D",
+      "MAR": "#C1272D"
+    },
+    "player_names": {
+      "Kylian Mbappé": "姆巴佩",
+      "Ousmane Dembélé": "登贝莱",
+      "Désiré Doué": "杜埃",
+      "Achraf Hakimi": "阿什拉夫",
+      "Yassine Bounou": "布努"
+    },
+    "star_chants": {
+      "Kylian Mbappé": "{name}！{name}！打进去了！法国队的十号站了出来！",
+      "Ousmane Dembélé": "{name}！这一脚打进去了！好球！",
+      "Achraf Hakimi": "{name}！队长站了出来！这球打进去了！"
+    }
+  },
+  "websocket_auth_placeholder": {
+    "note": "REST MVP does not need API keys. Later WebSocket support should read these from env/local files, never from firmware.",
+    "key_id_env": "KALSHI_ACCESS_KEY",
+    "private_key_path_env": "KALSHI_PRIVATE_KEY_PATH"
+  },
+  "markets": [
+    {
+      "ticker": "KXEXAMPLE-26JUL09-ARG",
+      "label": "阿根廷晋级",
+      "side_i_care": "yes",
+      "alert_move_cents": 3,
+      "speak_move_cents": 5,
+      "min_seconds_between_alerts": 120,
+      "near_close_minutes": 30,
+      "alerts_enabled": true,
+      "show_in_ticker": true
+    },
+    {
+      "ticker": "KXEXAMPLE-26JUL09-BRA",
+      "label": "巴西夺冠",
+      "side_i_care": "yes",
+      "alert_move_cents": 3,
+      "speak_move_cents": 5,
+      "min_seconds_between_alerts": 120,
+      "near_close_minutes": 30
+    },
+    {
+      "ticker": "KXEXAMPLE-26JUL09-ENG",
+      "label": "英格兰夺冠",
+      "side_i_care": "yes",
+      "alert_move_cents": 3,
+      "speak_move_cents": 5,
+      "min_seconds_between_alerts": 120,
+      "near_close_minutes": 30
+    }
+  ]
+}

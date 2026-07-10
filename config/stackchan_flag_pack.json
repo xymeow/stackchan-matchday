@@ -1,0 +1,19 @@
+{
+  "width": 22,
+  "height": 18,
+  "border": 1,
+  "overlays": {
+    "ma": {
+      "stroke": "#006233",
+      "stroke_width": 1.5,
+      "fill": "none",
+      "draw": "path 'M 12,7.7 L 10.8,11.8 L 14,9.3 L 10,9.3 L 13.2,11.8 Z'"
+    }
+  },
+  "codes": [
+    "ar", "au", "at", "be", "ba", "br", "ca", "ci", "cd", "co", "cv", "hr",
+    "cw", "cz", "dz", "ec", "eg", "gb-eng", "es", "fr", "de", "gh", "ht", "ir",
+    "iq", "jo", "jp", "kr", "sa", "ma", "mx", "nl", "no", "nz", "pa", "py",
+    "pt", "qa", "za", "gb-sct", "sn", "ch", "se", "tn", "tr", "uy", "us", "uz"
+  ]
+}

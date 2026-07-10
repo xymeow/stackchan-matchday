@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Xiaoyi He <xiaoyihe.ustc@gmail.com>
+Date: Thu, 9 Jul 2026 18:00:58 -0700
+Subject: [PATCH 1/2] Add xs mod partition for M5StackChan CoreS3
+
+The stock CoreS3 partition table has no type-0x40 xs partition, so mods
+cannot install at all (xsHost.c mounts mods from the first 0x40/1
+partition). Reserve 2MB at 0xDF0000 on the 16MB flash; the factory app
+partition stays 0xDE0000. This matches devices already flashed by the
+earlier stackchan-kalshi tooling, so existing units keep their mod slot.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ firmware/platforms/m5stackchan_cores3/manifest.json      | 3 ++-
+ .../platforms/m5stackchan_cores3/partitions-matchday.csv | 9 +++++++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+ create mode 100644 firmware/platforms/m5stackchan_cores3/partitions-matchday.csv
+
+diff --git a/firmware/platforms/m5stackchan_cores3/manifest.json b/firmware/platforms/m5stackchan_cores3/manifest.json
+index 318406e..faf55da 100644
+--- a/firmware/platforms/m5stackchan_cores3/manifest.json
++++ b/firmware/platforms/m5stackchan_cores3/manifest.json
+@@ -1,6 +1,7 @@
+ {
+   "build": {
+-    "SUBPLATFORM": "m5stackchan_cores3"
++    "SUBPLATFORM": "m5stackchan_cores3",
++    "PARTITIONS_FILE": "./partitions-matchday.csv"
+   },
+   "include": [
+     "$(BUILD)/devices/esp32/targets/m5stack_cores3/manifest.json",
+diff --git a/firmware/platforms/m5stackchan_cores3/partitions-matchday.csv b/firmware/platforms/m5stackchan_cores3/partitions-matchday.csv
+new file mode 100644
+index 0000000..9ee530c
+--- /dev/null
++++ b/firmware/platforms/m5stackchan_cores3/partitions-matchday.csv
+@@ -0,0 +1,9 @@
++# M5StackChan CoreS3 (16MB flash) with a 2MB `xs` mod partition so user
++# applications install with `npm run mod` instead of reflashing the host.
++# Layout matches devices previously flashed with the stackchan-kalshi setup.
++# Name,   Type, SubType, Offset,  Size, Flags
++nvs,      data, nvs,     0x9000,   0x006000,
++phy_init, data, phy,     0xF000,   0x001000,
++factory,  app,  factory, 0x10000,  0xDE0000,
++xs,       0x40, 1,       0xDF0000, 0x200000,
++storage,  data, spiffs,  0xFF0000, 0x010000,
+-- 
+2.50.1 (Apple Git-155)
+
