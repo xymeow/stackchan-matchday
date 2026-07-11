@@ -62,58 +62,6 @@ See [Configuration and operation](docs/configuration.md) for daily prompts,
 language, support and position behavior, commentary styles, mute controls, and
 standalone-market details.
 
-## Features
-
-- Persistent two-team probability bar, flags, and a bottom market ticker.
-- Reactions to goals, cards, substitutions, close misses, match phases, and
-  final results.
-- Casual, balanced, and professional commentary generated from shared event
-  facts, with compact on-device balloons.
-- Separate support and position perspectives, including explicit conflict and
-  uncertain-event wording.
-- Phone-based match setup with live Chinese/English switching and hot reload.
-- Optional LAN TTS; visual feedback and tone patterns still work without it.
-
-## Quick start
-
-### Already installed
-
-Update the repository and restart the watcher. Support/position wording,
-position-based market selection, and the global player catalog are watcher-only
-changes; an installed 1.5.0 mod and the official host can stay in place.
-
-```sh
-export MATCHDAY_DIR="$HOME/src/stackchan-matchday"
-cd "$MATCHDAY_DIR"
-git pull
-python3 tools/stackchan_kalshi_watch.py \
-  --config config/kalshi_watchlist.json --watch
-```
-
-Deploy `config/espn_player_catalog.json` with the watcher checkout. For exact
-upgrade boundaries, see the bilingual
-[Matchday MOD 1.5.0 notes](docs/releases/1.5.0.md) and
-[1.4.0 commentary-style notes](docs/releases/1.4.0.md).
-
-### First installation
-
-You need a CoreS3 Stack-chan with 16 MB flash, Python 3.10+, Node.js 20+,
-Moddable SDK, ESP-IDF, a USB data cable, and a phone and watcher computer on
-the same trusted LAN. macOS is required only for the included `say`-based TTS
-server.
-
-Follow [Getting started](docs/getting-started.md) for the tested upstream
-revision, one-time host preparation, QR generation, mod installation, watcher
-configuration, TTS, and verification. Host partition and optional CJK-font
-patch details live in [host/README.md](host/README.md).
-
-After installation, starting the watcher normally requires only:
-
-```sh
-python3 tools/stackchan_kalshi_watch.py \
-  --config config/kalshi_watchlist.json --watch
-```
-
 ## System design
 
 ![Stack-chan Matchday system design](docs/images/system-design.png)
@@ -134,6 +82,59 @@ the device. The phone, watcher, TTS server, and Stack-chan must remain on the
 same trusted LAN; the watcher-hosted `:8788/setup` page is a local fallback,
 not the primary QR flow.
 
+## Features
+
+- Persistent two-team probability bar, flags, and a bottom market ticker.
+- Reactions to goals, cards, substitutions, close misses, match phases, and
+  final results.
+- Casual, balanced, and professional commentary generated from shared event
+  facts, with compact on-device balloons.
+- Separate support and position perspectives, including explicit conflict and
+  uncertain-event wording.
+- Phone-based match setup with live Chinese/English switching and hot reload.
+- Automatic fixture discovery, adaptive polling, quiet hours, and standalone
+  market tracking when no match is available.
+- Optional LAN TTS; visual feedback and tone patterns still work without it.
+- A global ESPN athlete-ID catalog with manually verified Chinese names and
+  nicknames.
+
+## Quick start
+
+### Daily start
+
+From the repository root of an existing, configured checkout, keep the watcher
+computer awake and run:
+
+```sh
+python3 tools/stackchan_kalshi_watch.py \
+  --config config/kalshi_watchlist.json --watch
+```
+
+Daily startup does not require cloning, pulling, or reflashing. If speech is
+enabled, also start the optional LAN TTS service described in
+[Getting started](docs/getting-started.md).
+
+### First installation
+
+You need a CoreS3 Stack-chan with 16 MB flash, Python 3.10+, Node.js 20+,
+Moddable SDK, ESP-IDF, a USB data cable, and a phone and watcher computer on
+the same trusted LAN. macOS is required only for the included `say`-based TTS
+server.
+
+Follow [Getting started](docs/getting-started.md) for the tested upstream
+revision, one-time host preparation, QR generation, mod installation, watcher
+configuration, TTS, and verification. Host partition and optional CJK-font
+patch details live in [host/README.md](host/README.md).
+
+### Upgrade
+
+Before updating, open the [release notes directory](docs/releases/) and check
+which boundary changed: watcher, Matchday mod, or official host. Preserve the
+local watcher configuration and update only the affected layer. Watcher-only
+changes normally need a repository update and watcher restart, while mod or
+host changes must follow the version-specific build and flash instructions.
+The currently documented device release is [Matchday Mod 1.5.0](docs/releases/1.5.0.md).
+
 ## Documentation
 
 | Guide | Contents |
@@ -144,8 +145,8 @@ not the primary QR flow.
 | [Development](docs/development.md) | Repository map, tests, archive builds, and replay tooling |
 | [Host preparation](host/README.md) | Partition and optional CJK-font patches |
 | [Commentary styles PRD](docs/commentary-styles-prd.md) | Product rules and implementation contract |
-| [Release notes](docs/releases/1.5.0.md) | Version-specific upgrade boundaries |
-| [GitHub Wiki](https://github.com/xymeow/stackchan-matchday/wiki) | Human- and agent-friendly navigation, FAQ, and field debugging |
+| [Release notes](docs/releases/) | Version-specific changes and upgrade boundaries |
+| [Troubleshooting Wiki](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting) | FAQ, networking checks, and field debugging |
 
 English guides link to their Chinese counterparts at the top of each page.
 Repository documentation is the versioned source of truth; the Wiki is the
