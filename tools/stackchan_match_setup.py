@@ -541,13 +541,37 @@ class MatchSetupService:
 
         ordered_teams = [match["home"], match["away"]]
         ordered_markets = [market_by_team[normalize_team(team["name"])] for team in ordered_teams]
-        valid_teams = {str(team["name"]) for team in ordered_teams}
-        favorite_team = str(payload.get("favorite_team") or "").strip()
-        position_team = str(payload.get("position_team") or "").strip()
-        if favorite_team and favorite_team not in valid_teams:
-            raise ValueError("支持球队不属于这场比赛")
-        if position_team and position_team not in valid_teams:
-            raise ValueError("持仓球队不属于这场比赛")
+        team_by_normalized_name = {
+            normalize_team(str(team["name"])): str(team["name"])
+            for team in ordered_teams
+        }
+
+        def canonical_selected_team(field: str, error: str) -> str:
+            selected = str(payload.get(field) or "").strip()
+            if not selected:
+                return ""
+            canonical = team_by_normalized_name.get(normalize_team(selected))
+            if canonical is None:
+                raise ValueError(error)
+            return canonical
+
+        # The phone form uses the Kalshi outcome label, while ESPN occasionally
+        # uses an equivalent country name (for example Cape Verde/Cabo Verde).
+        # Persist the canonical ESPN name after the same normalization that
+        # already validated the fixture pairing.
+        favorite_team = canonical_selected_team(
+            "favorite_team", "支持球队不属于这场比赛"
+        )
+        position_team = canonical_selected_team(
+            "position_team", "持仓球队不属于这场比赛"
+        )
+        active_market_index = 0
+        if position_team:
+            active_market_index = next(
+                index
+                for index, team in enumerate(ordered_teams)
+                if str(team["name"]) == position_team
+            )
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
         if not commentary_style:
@@ -604,6 +628,8 @@ class MatchSetupService:
 
         configured_markets: list[dict[str, Any]] = []
         for index, (team, market) in enumerate(zip(ordered_teams, ordered_markets)):
+            market_is_active = index == active_market_index
+            opposing_index = 1 - index
             configured = dict(market_defaults)
             configured.update(
                 {
@@ -613,41 +639,44 @@ class MatchSetupService:
                         f"{team['name']} to advance",
                     ),
                     "side_i_care": "yes",
-                    "alerts_enabled": index == 0,
-                    "show_in_ticker": index == 0,
+                    "alerts_enabled": market_is_active,
+                    "show_in_ticker": market_is_active,
+                    "tracks_position": bool(position_team and market_is_active),
                 }
             )
-            if index == 0:
+            if market_is_active:
                 configured.update(
                     {
                         "goal_signal_enabled": True,
                         "goal_signal_up_speech": localized_pair(
                             (
-                                f"盘口突然拉升！{localized[0]}这边很可能进球了！"
-                                "先别眨眼，等文字直播确认！"
+                                f"{localized[index]}晋级盘口快速上行。"
+                                f"{localized[index]}进球的可能性上升，但目前仍属疑似，"
+                                "等待文字直播确认。"
                             ),
                             (
-                                f"The market just jumped! {english[0]} may have scored. "
-                                "Waiting for commentary confirmation!"
+                                f"The {english[index]} advancement market moved sharply higher. "
+                                f"Possible goal for {english[index]}; awaiting commentary confirmation."
                             ),
                         ),
                         "goal_signal_down_speech": localized_pair(
                             (
-                                f"盘口突然跳水！{localized[1]}可能进球了，"
-                                "先看场上，等文字直播确认。"
+                                f"{localized[index]}晋级盘口快速下挫。"
+                                f"{localized[opposing_index]}进球的可能性上升，但目前仍属疑似，"
+                                "等待文字直播确认。"
                             ),
                             (
-                                f"The market just dropped! {english[1]} may have scored. "
-                                "Waiting for commentary confirmation."
+                                f"The {english[index]} advancement market moved sharply lower. "
+                                f"Possible goal for {english[opposing_index]}; awaiting commentary confirmation."
                             ),
                         ),
                         "goal_signal_up_team": localized_pair(
-                            localized[0],
-                            english[0],
+                            localized[index],
+                            english[index],
                         ),
                         "goal_signal_down_team": localized_pair(
-                            localized[1],
-                            english[1],
+                            localized[opposing_index],
+                            english[opposing_index],
                         ),
                     }
                 )
@@ -748,6 +777,9 @@ class MatchSetupService:
                     "alerts_enabled": True,
                     "show_in_ticker": True,
                     "goal_signal_enabled": False,
+                    "favorite_team": "",
+                    "position_team": "",
+                    "tracks_position": False,
                 }
             )
             configured_markets.append(configured)
@@ -757,6 +789,8 @@ class MatchSetupService:
         espn = raw.setdefault("espn", {})
         espn["enabled"] = False
         espn["commentary_style"] = commentary_style
+        espn["favorite_team"] = ""
+        espn["position_team"] = ""
 
         setup = raw.setdefault("setup_server", {})
         setup["last_kalshi_url"] = kalshi_value

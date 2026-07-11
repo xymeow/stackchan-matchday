@@ -199,6 +199,131 @@ class MatchSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "language must be one of: zh, en"):
             instance.apply_selection({"language": "fr"})
 
+    def test_apply_enables_position_team_market_and_goal_signal_direction(self):
+        initial = {
+            "probability_bar": {},
+            "espn": {"team_names": {}, "team_colors": {}},
+            "setup_server": {},
+            "markets": [
+                {
+                    "ticker": "OLD",
+                    "alert_move_cents": 5,
+                    "goal_signal_enabled": True,
+                    "goal_signal_up_speech": "stale up",
+                    "goal_signal_down_speech": "stale down",
+                    "goal_signal_up_team": "stale up team",
+                    "goal_signal_down_team": "stale down team",
+                }
+            ],
+        }
+        match = setup.parse_scoreboard(
+            SCOREBOARD,
+            now=datetime(2026, 7, 9, 20, tzinfo=timezone.utc),
+        )[0]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+            with patch.object(
+                instance,
+                "_kalshi_event",
+                return_value=setup.event_markets(KALSHI_EVENT),
+            ):
+                with patch.object(instance, "_espn_match", return_value=match):
+                    instance.apply_selection(
+                        {
+                            "event_ticker": "KXWCADVANCE-26JUL10ESPBEL",
+                            "espn_event_id": "760511",
+                            "favorite_team": "Spain",
+                            "position_team": "Belgium",
+                            "language": "zh",
+                        }
+                    )
+            updated = json.loads(path.read_text(encoding="utf-8"))
+
+        spain_market, belgium_market = updated["markets"]
+        self.assertFalse(spain_market["alerts_enabled"])
+        self.assertFalse(spain_market["show_in_ticker"])
+        self.assertFalse(spain_market["tracks_position"])
+        self.assertFalse(spain_market["goal_signal_enabled"])
+        self.assertNotIn("goal_signal_up_speech", spain_market)
+        self.assertNotIn("goal_signal_down_speech", spain_market)
+        self.assertNotIn("goal_signal_up_team", spain_market)
+        self.assertNotIn("goal_signal_down_team", spain_market)
+        self.assertTrue(belgium_market["alerts_enabled"])
+        self.assertTrue(belgium_market["show_in_ticker"])
+        self.assertTrue(belgium_market["tracks_position"])
+        self.assertTrue(belgium_market["goal_signal_enabled"])
+        self.assertEqual(
+            belgium_market["goal_signal_up_team"],
+            {"zh": "比利时", "en": "Belgium"},
+        )
+        self.assertEqual(
+            belgium_market["goal_signal_down_team"],
+            {"zh": "西班牙", "en": "Spain"},
+        )
+        self.assertIn("比利时", belgium_market["goal_signal_up_speech"]["zh"])
+        self.assertIn("西班牙", belgium_market["goal_signal_down_speech"]["zh"])
+
+    def test_apply_canonicalizes_kalshi_team_aliases_to_espn_names(self):
+        initial = {
+            "probability_bar": {},
+            "espn": {"team_names": {}, "team_colors": {}},
+            "setup_server": {},
+            "markets": [{"ticker": "OLD"}],
+        }
+        match = {
+            "event_id": "alias-match",
+            "starts_at": "2026-07-12T19:00:00+00:00",
+            "home": setup.team_metadata("Cabo Verde", "CPV", "left"),
+            "away": setup.team_metadata("Portugal", "POR", "right"),
+        }
+        kalshi_event = {
+            "event": {
+                "event_ticker": "KXWCADVANCE-ALIAS",
+                "title": "Cape Verde vs Portugal",
+                "markets": [
+                    {
+                        "ticker": "KXWCADVANCE-ALIAS-CPV",
+                        "yes_sub_title": "Cape Verde advances",
+                    },
+                    {
+                        "ticker": "KXWCADVANCE-ALIAS-POR",
+                        "yes_sub_title": "Portugal advances",
+                    },
+                ],
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+            with patch.object(
+                instance,
+                "_kalshi_event",
+                return_value=setup.event_markets(kalshi_event),
+            ):
+                with patch.object(instance, "_espn_match", return_value=match):
+                    result = instance.apply_selection(
+                        {
+                            "event_ticker": "KXWCADVANCE-ALIAS",
+                            "espn_event_id": "alias-match",
+                            "favorite_team": "Cape Verde",
+                            "position_team": "Cape Verde",
+                            "language": "zh",
+                        }
+                    )
+            updated = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result["favorite_team"], "Cabo Verde")
+        self.assertEqual(result["position_team"], "Cabo Verde")
+        self.assertEqual(updated["espn"]["favorite_team"], "Cabo Verde")
+        self.assertEqual(updated["espn"]["position_team"], "Cabo Verde")
+        self.assertTrue(updated["markets"][0]["alerts_enabled"])
+        self.assertTrue(updated["markets"][0]["tracks_position"])
+        self.assertFalse(updated["markets"][1]["alerts_enabled"])
+
     def test_setup_page_contains_mobile_form_controls(self):
         page = setup.setup_page_html()
 
@@ -317,9 +442,23 @@ class StandaloneMarketTests(unittest.TestCase):
         initial = {
             "ticker_enabled": False,
             "probability_bar": {"enabled": True, "market_ticker": "OLD"},
-            "espn": {"enabled": True, "event_id": "760511"},
+            "espn": {
+                "enabled": True,
+                "event_id": "760511",
+                "favorite_team": "Spain",
+                "position_team": "Belgium",
+            },
             "setup_server": {},
-            "markets": [{"ticker": "OLD", "label": "old", "alert_move_cents": 7}],
+            "markets": [
+                {
+                    "ticker": "OLD",
+                    "label": "old",
+                    "alert_move_cents": 7,
+                    "favorite_team": "Spain",
+                    "position_team": "Belgium",
+                    "tracks_position": True,
+                }
+            ],
         }
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "watch.json"
@@ -356,6 +495,15 @@ class StandaloneMarketTests(unittest.TestCase):
         self.assertTrue(updated["ticker_enabled"])
         self.assertFalse(updated["probability_bar"]["enabled"])
         self.assertFalse(updated["espn"]["enabled"])
+        self.assertEqual(updated["espn"]["favorite_team"], "")
+        self.assertEqual(updated["espn"]["position_team"], "")
+        self.assertTrue(
+            all(market["favorite_team"] == "" for market in updated["markets"])
+        )
+        self.assertTrue(
+            all(market["position_team"] == "" for market in updated["markets"])
+        )
+        self.assertFalse(any(market["tracks_position"] for market in updated["markets"]))
         self.assertEqual(updated["language"], "en")
         self.assertEqual(updated["setup_server"]["last_event_ticker"], "KXPRES-28")
 

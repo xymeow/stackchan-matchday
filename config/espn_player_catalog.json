@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "players": {
+    "espn:45843": {
+      "aliases": ["Lionel Messi", "L. Messi"],
+      "display_name": {"zh": "梅西", "en": "Lionel Messi"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:134947": {
+      "aliases": ["Kevin De Bruyne", "K. De Bruyne"],
+      "display_name": {"zh": "德布劳内", "en": "Kevin De Bruyne"},
+      "casual_name": {"zh": "丁丁", "en": "De Bruyne"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:139437": {
+      "aliases": ["Romelu Lukaku", "R. Lukaku"],
+      "display_name": {"zh": "卢卡库", "en": "Romelu Lukaku"},
+      "featured": true
+    },
+    "espn:142200": {
+      "aliases": ["Harry Kane", "H. Kane"],
+      "display_name": {"zh": "凯恩", "en": "Harry Kane"},
+      "casual_name": {"zh": "飓风凯恩", "en": "Hurricane Kane"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:149981": {
+      "aliases": ["Granit Xhaka", "G. Xhaka"],
+      "display_name": {"zh": "扎卡", "en": "Granit Xhaka"},
+      "featured": true
+    },
+    "espn:158626": {
+      "aliases": ["Emiliano Martínez", "E. Martínez", "Emiliano Martinez"],
+      "display_name": {"zh": "埃米利亚诺·马丁内斯", "en": "Emiliano Martinez"},
+      "featured": true
+    },
+    "espn:159443": {
+      "aliases": ["Jordan Pickford", "J. Pickford"],
+      "display_name": {"zh": "皮克福德", "en": "Jordan Pickford"},
+      "featured": true
+    },
+    "espn:174980": {
+      "aliases": ["Leandro Trossard", "L. Trossard"],
+      "display_name": {"zh": "特罗萨德", "en": "Leandro Trossard"},
+      "featured": true
+    },
+    "espn:188230": {
+      "aliases": ["Alexander Sørloth", "A. Sørloth", "Alexander Sorloth"],
+      "display_name": {"zh": "瑟洛特", "en": "Alexander Sorloth"},
+      "featured": true
+    },
+    "espn:193610": {
+      "aliases": ["Ørjan Nyland", "Ø. Nyland", "Orjan Nyland"],
+      "display_name": {"zh": "尼兰", "en": "Orjan Nyland"},
+      "featured": false
+    },
+    "espn:203669": {
+      "aliases": ["Martin Ødegaard", "M. Ødegaard", "Martin Odegaard"],
+      "display_name": {"zh": "厄德高", "en": "Martin Odegaard"},
+      "featured": true
+    },
+    "espn:214562": {
+      "aliases": ["Manuel Akanji", "M. Akanji"],
+      "display_name": {"zh": "阿坎吉", "en": "Manuel Akanji"},
+      "featured": true
+    },
+    "espn:219713": {
+      "aliases": ["Lautaro Martínez", "L. Martínez", "Lautaro Martinez"],
+      "display_name": {"zh": "劳塔罗·马丁内斯", "en": "Lautaro Martinez"},
+      "featured": true
+    },
+    "espn:227765": {
+      "aliases": ["Dani Olmo", "D. Olmo"],
+      "display_name": {"zh": "奥尔莫", "en": "Dani Olmo"},
+      "featured": true
+    },
+    "espn:229744": {
+      "aliases": ["Ousmane Dembélé", "O. Dembélé", "Ousmane Dembele"],
+      "display_name": {"zh": "登贝莱", "en": "Ousmane Dembele"},
+      "featured": true
+    },
+    "espn:230945": {
+      "aliases": ["Marcus Rashford", "M. Rashford"],
+      "display_name": {"zh": "拉什福德", "en": "Marcus Rashford"},
+      "casual_name": {"zh": "拉师傅", "en": "Rashford"},
+      "featured": true
+    },
+    "espn:231388": {
+      "aliases": ["Kylian Mbappé", "K. Mbappé", "Kylian Mbappe"],
+      "display_name": {"zh": "姆巴佩", "en": "Kylian Mbappe"},
+      "casual_name": {"zh": "姆总", "en": "Mbappe"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:231828": {
+      "aliases": ["Rodri"],
+      "display_name": {"zh": "罗德里", "en": "Rodri"},
+      "featured": true
+    },
+    "espn:238262": {
+      "aliases": ["Declan Rice", "D. Rice"],
+      "display_name": {"zh": "赖斯", "en": "Declan Rice"},
+      "featured": true
+    },
+    "espn:250465": {
+      "aliases": ["Pedri"],
+      "display_name": {"zh": "佩德里", "en": "Pedri"},
+      "featured": true
+    },
+    "espn:253989": {
+      "aliases": ["Erling Haaland", "E. Haaland"],
+      "display_name": {"zh": "哈兰德", "en": "Erling Haaland"},
+      "casual_name": {"zh": "哈宝", "en": "Haaland"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:277206": {
+      "aliases": ["Julián Álvarez", "J. Álvarez", "Julian Alvarez"],
+      "display_name": {"zh": "阿尔瓦雷斯", "en": "Julian Alvarez"},
+      "casual_name": {"zh": "小蜘蛛", "en": "Julian Alvarez"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:280555": {
+      "aliases": ["Bukayo Saka", "B. Saka"],
+      "display_name": {"zh": "萨卡", "en": "Bukayo Saka"},
+      "casual_name": {"zh": "小辣椒萨卡", "en": "Little Chilli Saka"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    },
+    "espn:283672": {
+      "aliases": ["Jérémy Doku", "J. Doku", "Jeremy Doku"],
+      "display_name": {"zh": "多库", "en": "Jeremy Doku"},
+      "featured": true
+    },
+    "espn:291281": {
+      "aliases": ["Jude Bellingham", "J. Bellingham"],
+      "display_name": {"zh": "贝林厄姆", "en": "Jude Bellingham"},
+      "featured": true
+    },
+    "espn:312146": {
+      "aliases": ["Nico Williams", "N. Williams"],
+      "display_name": {"zh": "尼科·威廉斯", "en": "Nico Williams"},
+      "featured": true
+    },
+    "espn:319368": {
+      "aliases": ["Antonio Nusa", "A. Nusa"],
+      "display_name": {"zh": "努萨", "en": "Antonio Nusa"},
+      "featured": true
+    },
+    "espn:362150": {
+      "aliases": ["Lamine Yamal", "L. Yamal"],
+      "display_name": {"zh": "亚马尔", "en": "Lamine Yamal"},
+      "casual_name": {"zh": "小孩哥", "en": "Yamal"},
+      "featured": true,
+      "goal_chant": {"zh": "{name}破门了！", "en": "{name} scores!"}
+    }
+  }
+}

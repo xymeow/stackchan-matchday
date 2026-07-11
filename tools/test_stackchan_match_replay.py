@@ -141,7 +141,7 @@ class ReplayTests(unittest.TestCase):
             [("1", "0"), ("2", "0"), ("2", "0")],
         )
         self.assertEqual([frame.alert.celebration for frame in frames], ["goal", "goal", "result-win"])
-        self.assertIn("现在法国1比0摩洛哥", frames[0].alert.speech)
+        self.assertIn("法国1比0领先摩洛哥", frames[0].alert.speech)
 
     def test_english_replay_goal_and_final_are_fully_localized(self):
         frames = replay.build_replay_frames(
@@ -159,13 +159,17 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(
             goal.speech,
             "At 60', Kylian Mbappé! Kylian Mbappé! He's scored! France's number 10 delivers! "
-            "It is France 1, Morocco 0.",
+            "It is France 1, Morocco 0. That helps both France and the France position.",
         )
         self.assertFalse(goal.is_final)
 
         self.assertEqual(result.kind, "espn_status")
         self.assertEqual(result.balloon, "Full time | FRA 2-0 MAR")
-        self.assertEqual(result.speech, "Full time. It is France 2, Morocco 0.")
+        self.assertEqual(
+            result.speech,
+            "Full time. It is France 2, Morocco 0. "
+            "That helps both France and the France position.",
+        )
         self.assertTrue(result.is_final)
         self.assertTrue(watcher.is_final_status_alert(result))
 
