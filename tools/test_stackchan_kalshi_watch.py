@@ -80,6 +80,85 @@ def contains_han(value: str) -> bool:
     return any("\u3400" <= character <= "\u9fff" for character in value)
 
 
+class SetupServerConfigTests(unittest.TestCase):
+    def _load_with_setup_server(self, setup_server: dict) -> watcher.WatchConfig:
+        raw = {
+            "setup_server": setup_server,
+            "markets": [{"ticker": "TEST", "label": "test"}],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw), encoding="utf-8")
+            return watcher.load_config(path)
+
+    def test_setup_server_defaults_to_loopback_when_host_is_omitted(self):
+        self.assertEqual(watcher.SetupServerConfig().host, "127.0.0.1")
+        for setup_server in (
+            {"enabled": True},
+            {"enabled": True, "host": "  "},
+        ):
+            with self.subTest(setup_server=setup_server):
+                config = self._load_with_setup_server(setup_server)
+                self.assertEqual(config.setup_server.host, "127.0.0.1")
+
+    def test_setup_server_honors_explicit_host(self):
+        config = self._load_with_setup_server(
+            {"enabled": True, "host": "0.0.0.0"}
+        )
+
+        self.assertEqual(config.setup_server.host, "0.0.0.0")
+
+    def test_setup_server_rejects_unsupported_ipv6_host(self):
+        with self.assertRaisesRegex(
+            watcher.ConfigError,
+            "setup_server.host must be an IPv4 address or hostname",
+        ):
+            self._load_with_setup_server({"enabled": True, "host": "::1"})
+
+    def test_advertised_url_prefers_public_base_url(self):
+        config = watcher.WatchConfig(
+            setup_server=watcher.SetupServerConfig(
+                host="127.0.0.1",
+                port=8788,
+                public_base_url="https://setup.example.test",
+            )
+        )
+
+        with patch.object(watcher.socket, "socket") as socket_factory:
+            url = watcher.advertised_setup_url(config)
+
+        self.assertEqual(url, "https://setup.example.test/setup")
+        socket_factory.assert_not_called()
+
+    def test_advertised_url_uses_concrete_bind_host_without_discovery(self):
+        config = watcher.WatchConfig(
+            setup_server=watcher.SetupServerConfig(host="127.0.0.1", port=8788)
+        )
+
+        with patch.object(watcher.socket, "socket") as socket_factory:
+            url = watcher.advertised_setup_url(config)
+
+        self.assertEqual(url, "http://127.0.0.1:8788/setup")
+        socket_factory.assert_not_called()
+
+    def test_advertised_url_discovers_lan_host_for_wildcard_bind(self):
+        config = watcher.WatchConfig(
+            stackchan_host="192.0.2.1",
+            setup_server=watcher.SetupServerConfig(
+                host="0.0.0.0",
+                port=8788,
+            ),
+        )
+        with patch.object(watcher.socket, "socket") as socket_factory:
+            probe = socket_factory.return_value.__enter__.return_value
+            probe.getsockname.return_value = ("192.168.1.23", 54321)
+
+            url = watcher.advertised_setup_url(config)
+
+        self.assertEqual(url, "http://192.168.1.23:8788/setup")
+        probe.connect.assert_called_once_with(("192.0.2.1", 80))
+
+
 class ConfigLocalizationTests(unittest.TestCase):
     def localized_config(self) -> dict:
         return {

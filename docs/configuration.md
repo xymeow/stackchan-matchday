@@ -68,9 +68,12 @@ copy at `config/kalshi_watchlist.json`, and validate it with
 `python3 -m json.tool` before starting the watcher.
 
 The setup service normally binds `127.0.0.1:8788`; its `/setup` page is a local
-admin fallback rather than the primary on-device QR flow. Once per local day,
-the watcher can ask you to scan and choose a match. Configure that behavior
-with `setup_server.daily_prompt_hour` (`-1` disables it),
+admin fallback rather than the primary on-device QR flow. To expose that
+optional page on a trusted LAN, explicitly set `setup_server.host` to
+`0.0.0.0`; never port-forward it. The bundled server accepts IPv4 addresses
+and hostnames, not IPv6 literals. Once per local day, the watcher can ask you
+to scan and choose a match. Configure that behavior with
+`setup_server.daily_prompt_hour` (`-1` disables it),
 `prompt_minutes_before`, `quiet_hours`, and `lookahead_days`.
 
 ## Player catalog and naming
