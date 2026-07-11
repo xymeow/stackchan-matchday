@@ -43,8 +43,8 @@ class CommentaryStyleReleaseContractTests(unittest.TestCase):
         )
         mod_web = (ROOT / "mod" / "web.js").read_text(encoding="utf-8")
         documents = [
-            (ROOT / "README.md").read_text(encoding="utf-8"),
-            (ROOT / "README.zh-CN.md").read_text(encoding="utf-8"),
+            (ROOT / "docs" / "device-api.md").read_text(encoding="utf-8"),
+            (ROOT / "docs" / "device-api.zh-CN.md").read_text(encoding="utf-8"),
             (ROOT / "docs" / "commentary-styles-prd.md").read_text(encoding="utf-8"),
             (ROOT / "docs" / "releases" / "1.4.0.md").read_text(encoding="utf-8"),
         ]

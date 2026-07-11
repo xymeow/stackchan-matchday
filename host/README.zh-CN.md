@@ -75,5 +75,5 @@ mcconfig -d -m -p esp32:./platforms/m5stackchan_cores3 -t deploy \
   "$PWD/stackchan/manifest_m5stackchan_cores3.json"
 ```
 
-完成这次 host 烧录后，回到根 README 生成设备专属二维码并安装 Matchday Mod。
-以后仅重新构建 Mod 时，不需要再次烧录 host。
+完成这次 host 烧录后，继续阅读[安装指南](../docs/getting-started.zh-CN.md)，生成设备专属二维码并
+安装 Matchday Mod。以后仅重新构建 Mod 时，不需要再次烧录 host。
