@@ -78,6 +78,6 @@ mcconfig -d -m -p esp32:./platforms/m5stackchan_cores3 -t deploy \
   "$PWD/stackchan/manifest_m5stackchan_cores3.json"
 ```
 
-After this one-time host flash, return to the root README to generate the
-device-specific QR and install the Matchday mod. Rebuilding only the mod does
-not require reflashing the host.
+After this one-time host flash, continue with [Getting started](../docs/getting-started.md)
+to generate the device-specific QR and install the Matchday mod. Rebuilding
+only the mod does not require reflashing the host.
