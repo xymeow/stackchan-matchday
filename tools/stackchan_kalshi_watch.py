@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import socket
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time as dt_time, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -41,6 +42,13 @@ try:
         resolve_text_map,
     )
     from stackchan_match_setup import MatchSetupService, start_setup_server
+    from stackchan_player_catalog import (
+        PlayerCatalog,
+        PlayerCatalogError,
+        ResolvedPlayerProfile,
+        load_default_player_catalog,
+        resolve_player_profile,
+    )
 except ModuleNotFoundError:  # pragma: no cover - supports importlib-based tests.
     sys.path.insert(0, str(Path(__file__).parent))
     from stackchan_i18n import (
@@ -52,6 +60,13 @@ except ModuleNotFoundError:  # pragma: no cover - supports importlib-based tests
         resolve_text_map,
     )
     from stackchan_match_setup import MatchSetupService, start_setup_server
+    from stackchan_player_catalog import (
+        PlayerCatalog,
+        PlayerCatalogError,
+        ResolvedPlayerProfile,
+        load_default_player_catalog,
+        resolve_player_profile,
+    )
 
 
 DEFAULT_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
@@ -126,6 +141,9 @@ class MarketConfig:
     goal_signal_down_team: str = ""
     language: str = "zh"
     commentary_style: str = DEFAULT_COMMENTARY_STYLE
+    favorite_team: str = ""
+    position_team: str = ""
+    tracks_position: bool = False
 
 
 @dataclass
@@ -197,6 +215,11 @@ class ESPNConfig:
     team_colors: dict[str, str] = field(default_factory=dict)
     player_names: dict[str, str] = field(default_factory=dict)
     star_chants: dict[str, str] = field(default_factory=dict)
+    player_catalog: PlayerCatalog = field(
+        default_factory=load_default_player_catalog,
+        repr=False,
+        compare=False,
+    )
     language: str = "zh"
     commentary_style: str = DEFAULT_COMMENTARY_STYLE
 
@@ -390,6 +413,20 @@ class ESPNEventFacts:
     is_equalizer: bool = False
 
 
+@dataclass(frozen=True)
+class EventPerspective:
+    """How one match event lands for the fan and the configured position.
+
+    The values intentionally describe impact instead of wording.  Voice styles
+    can therefore sound different without quietly changing which side of an
+    event the user is on.
+    """
+
+    support_outcome: str = "neutral"
+    position_outcome: str = "none"
+    alignment: str = "neutral"
+
+
 @dataclass
 class ESPNState:
     initialized: bool = False
@@ -397,6 +434,7 @@ class ESPNState:
     last_status_state: str = ""
     last_polled_at: float = 0
     final_result_announced: bool = False
+    player_coverage_signature: tuple[str, ...] = field(default_factory=tuple)
 
 
 PendingAlertContext = tuple[
@@ -567,6 +605,10 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         raise ConfigError("espn.player_names must be an object")
     if not isinstance(star_chants_raw, dict):
         raise ConfigError("espn.star_chants must be an object")
+    try:
+        player_catalog = load_default_player_catalog()
+    except PlayerCatalogError as error:
+        raise ConfigError(f"cannot load ESPN player catalog: {error}") from error
     espn = ESPNConfig(
         language=language,
         commentary_style=commentary_style,
@@ -603,6 +645,7 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         team_colors={str(key): str(value) for key, value in team_colors_raw.items()},
         player_names=_config_text_map(player_names_raw, language, path="espn.player_names"),
         star_chants=_config_text_map(star_chants_raw, language, path="espn.star_chants"),
+        player_catalog=player_catalog,
     )
 
     markets: list[MarketConfig] = []
@@ -633,6 +676,31 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
             language,
             path=f"markets[{idx}].goal_signal_down_team",
         )
+        goal_signal_up_team = _goal_signal_team_fact(
+            goal_signal_up_team,
+            goal_signal_up_speech,
+            espn.team_names,
+        )
+        goal_signal_down_team = _goal_signal_team_fact(
+            goal_signal_down_team,
+            goal_signal_down_speech,
+            espn.team_names,
+        )
+        favorite_team = (
+            localized_team_name(espn, espn.favorite_team) if espn.favorite_team else ""
+        )
+        position_team = (
+            localized_team_name(espn, espn.position_team) if espn.position_team else ""
+        )
+        inferred_position_market = bool(
+            position_team
+            and goal_signal_up_team
+            and position_team.casefold() == goal_signal_up_team.casefold()
+        )
+        tracks_position = bool(
+            position_team
+            and item.get("tracks_position", inferred_position_market)
+        )
         markets.append(
             MarketConfig(
                 ticker=ticker,
@@ -662,16 +730,11 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
                 ),
                 goal_signal_up_speech=goal_signal_up_speech,
                 goal_signal_down_speech=goal_signal_down_speech,
-                goal_signal_up_team=_goal_signal_team_fact(
-                    goal_signal_up_team,
-                    goal_signal_up_speech,
-                    espn.team_names,
-                ),
-                goal_signal_down_team=_goal_signal_team_fact(
-                    goal_signal_down_team,
-                    goal_signal_down_speech,
-                    espn.team_names,
-                ),
+                goal_signal_up_team=goal_signal_up_team,
+                goal_signal_down_team=goal_signal_down_team,
+                favorite_team=favorite_team,
+                position_team=position_team,
+                tracks_position=tracks_position,
             )
         )
 
@@ -1165,8 +1228,8 @@ def match_score_speech(snapshot: MatchSnapshot, config: ESPNConfig) -> str:
         return pick(
             config.language,
             (
-                f"现在{home}和{away}常规比分{snapshot.home.score}比{snapshot.away.score}，"
-                f"点球{snapshot.home.shootout_score or '0'}比{snapshot.away.shootout_score or '0'}"
+                f"{home}和{away}比赛战成{snapshot.home.score}比{snapshot.away.score}，"
+                f"点球比分{snapshot.home.shootout_score or '0'}比{snapshot.away.shootout_score or '0'}"
             ),
             (
                 f"It is {home} {snapshot.home.score}, {away} {snapshot.away.score}; "
@@ -1174,10 +1237,111 @@ def match_score_speech(snapshot: MatchSnapshot, config: ESPNConfig) -> str:
                 f"{snapshot.away.shootout_score or '0'}"
             ),
         )
-    return pick(
-        config.language,
-        f"现在{home}{snapshot.home.score}比{snapshot.away.score}{away}",
-        f"It is {home} {snapshot.home.score}, {away} {snapshot.away.score}",
+    if config.language == "en":
+        return f"It is {home} {snapshot.home.score}, {away} {snapshot.away.score}"
+    home_score = _score_number(snapshot.home.score)
+    away_score = _score_number(snapshot.away.score)
+    if home_score is not None and away_score is not None:
+        if home_score == away_score:
+            return f"{home}和{away}打成{snapshot.home.score}比{snapshot.away.score}"
+        if home_score > away_score:
+            return f"{home}{snapshot.home.score}比{snapshot.away.score}领先{away}"
+        return f"{away}{snapshot.away.score}比{snapshot.home.score}领先{home}"
+    return f"比分为{home}{snapshot.home.score}比{snapshot.away.score}{away}"
+
+
+def commentary_score(
+    text: str,
+    snapshot: MatchSnapshot,
+) -> tuple[int, int] | None:
+    """Return the score explicitly embedded in one ESPN commentary row.
+
+    A poll can deliver several missed events at once while the scoreboard on
+    ``snapshot`` already reflects the newest one.  Using the row's own score
+    prevents an earlier goal from being narrated with the later score.
+    """
+
+    details = _commentary_score_details(text, snapshot)
+    return (details[0], details[1]) if details is not None else None
+
+
+def _commentary_score_details(
+    text: str,
+    snapshot: MatchSnapshot,
+) -> tuple[int, int, int | None, int | None] | None:
+    """Parse regular and optional parenthesized shootout scores."""
+
+    home_aliases = tuple(
+        value for value in (snapshot.home.name, snapshot.home.abbreviation) if value
+    )
+    away_aliases = tuple(
+        value for value in (snapshot.away.name, snapshot.away.abbreviation) if value
+    )
+    score_token = r"(\d+)(?:\((\d+)\))?"
+    ending = r"(?=$|[\s.,;:!?])"
+    for home_name in home_aliases:
+        for away_name in away_aliases:
+            home_first = re.search(
+                rf"{re.escape(home_name)}\s+{score_token}\s*,\s*"
+                rf"{re.escape(away_name)}\s+{score_token}{ending}",
+                text,
+                re.IGNORECASE,
+            )
+            if home_first:
+                return (
+                    int(home_first.group(1)),
+                    int(home_first.group(3)),
+                    int(home_first.group(2)) if home_first.group(2) is not None else None,
+                    int(home_first.group(4)) if home_first.group(4) is not None else None,
+                )
+            away_first = re.search(
+                rf"{re.escape(away_name)}\s+{score_token}\s*,\s*"
+                rf"{re.escape(home_name)}\s+{score_token}{ending}",
+                text,
+                re.IGNORECASE,
+            )
+            if away_first:
+                return (
+                    int(away_first.group(3)),
+                    int(away_first.group(1)),
+                    int(away_first.group(4)) if away_first.group(4) is not None else None,
+                    int(away_first.group(2)) if away_first.group(2) is not None else None,
+                )
+    return None
+
+
+def snapshot_at_commentary_score(
+    item: dict[str, Any],
+    snapshot: MatchSnapshot,
+) -> MatchSnapshot:
+    play = item.get("play") or {}
+    text = str(item.get("text") or play.get("text") or "")
+    score = _commentary_score_details(text, snapshot)
+    if score is None:
+        return snapshot
+    home_score, away_score, home_shootout, away_shootout = score
+    has_shootout_score = home_shootout is not None or away_shootout is not None
+    preserve_shootout = "penalty shootout" in text.casefold()
+    return replace(
+        snapshot,
+        home=replace(
+            snapshot.home,
+            score=str(home_score),
+            shootout_score=(
+                str(home_shootout or 0)
+                if has_shootout_score
+                else snapshot.home.shootout_score if preserve_shootout else ""
+            ),
+        ),
+        away=replace(
+            snapshot.away,
+            score=str(away_score),
+            shootout_score=(
+                str(away_shootout or 0)
+                if has_shootout_score
+                else snapshot.away.shootout_score if preserve_shootout else ""
+            ),
+        ),
     )
 
 
@@ -1312,35 +1476,58 @@ def _ends_drinks_break(item: dict[str, Any], snapshot: MatchSnapshot) -> bool:
     return False
 
 
-def _configured_player_text(mapping: dict[str, str], player: MatchPlayer | None) -> str:
+def _resolved_player_profile(
+    config: ESPNConfig,
+    player: MatchPlayer | None,
+) -> ResolvedPlayerProfile | None:
     if player is None:
-        return ""
-    normalized = {str(key).casefold(): str(value) for key, value in mapping.items()}
-    for key in _player_lookup_keys(player.athlete_id, player.name, player.short_name):
-        value = normalized.get(key)
-        if value:
-            return value
-    return ""
+        return None
+    return resolve_player_profile(
+        config.player_catalog,
+        athlete_id=player.athlete_id,
+        name=player.name,
+        short_name=player.short_name,
+        language=config.language,
+        player_names=config.player_names,
+        star_chants=config.star_chants,
+    )
 
 
 def localized_player_name(config: ESPNConfig, player: MatchPlayer | None) -> str:
     if player is None:
         return ""
-    return _configured_player_text(config.player_names, player) or player.name or player.short_name
+    profile = _resolved_player_profile(config, player)
+    return (profile.display_name if profile else "") or player.name or player.short_name
+
+
+def spoken_player_name(config: ESPNConfig, player: MatchPlayer | None) -> str:
+    """Return a nickname only for casual speech; facts and balloons stay formal."""
+
+    if player is None:
+        return ""
+    profile = _resolved_player_profile(config, player)
+    if (
+        profile is not None
+        and config.commentary_style == "casual"
+        and profile.casual_name
+    ):
+        return profile.casual_name
+    return (profile.display_name if profile else "") or player.name or player.short_name
 
 
 def player_announcement(config: ESPNConfig, player: MatchPlayer | None) -> str:
     if player is None:
         return ""
-    name = localized_player_name(config, player)
-    if _configured_player_text(config.star_chants, player):
-        return name
-    if player.jersey:
-        return pick(
-            config.language,
-            f"{player.jersey}号球员{name}",
-            f"number {player.jersey} {name}",
-        )
+    name = spoken_player_name(config, player)
+    profile = _resolved_player_profile(config, player)
+    # ESPN already gives us a stable player identity.  Repeating "number N
+    # player" before every unfamiliar name sounds like a roster export rather
+    # than live commentary, and the number adds no event fact that is missing
+    # from the name itself.
+    if config.language == "en" and player.jersey and not (
+        profile and profile.featured
+    ):
+        return f"number {player.jersey} {name}"
     return name
 
 
@@ -1349,17 +1536,66 @@ def render_star_chant(
     player: MatchPlayer | None,
     team_name: str,
 ) -> str:
-    chant = _configured_player_text(config.star_chants, player)
+    profile = _resolved_player_profile(config, player)
+    chant = profile.goal_chant if profile else ""
     if not chant or player is None:
         return ""
     values = {
-        "name": localized_player_name(config, player),
+        "name": spoken_player_name(config, player),
+        "formal_name": localized_player_name(config, player),
         "number": player.jersey,
         "team": team_name,
     }
     for key, value in values.items():
         chant = chant.replace("{" + key + "}", value)
     return chant.strip()
+
+
+def player_catalog_coverage(
+    snapshot: MatchSnapshot,
+    config: ESPNConfig,
+) -> tuple[int, int, int, tuple[str, ...], tuple[str, ...]]:
+    """Summarize roster coverage without guessing unknown Chinese names."""
+
+    unique: dict[str, MatchPlayer] = {}
+    for player in snapshot.players.values():
+        identity = player.athlete_id or player.name.casefold() or player.short_name.casefold()
+        if identity:
+            unique.setdefault(identity, player)
+    matched = 0
+    featured = 0
+    fallback: list[str] = []
+    for identity, player in unique.items():
+        profile = _resolved_player_profile(config, player)
+        if profile:
+            featured += int(profile.featured)
+        if profile and profile.display_name:
+            matched += 1
+        else:
+            fallback.append(player.name or player.short_name or identity)
+    signature = tuple(sorted(unique))
+    return len(unique), matched, featured, tuple(sorted(fallback)), signature
+
+
+def report_player_catalog_coverage(
+    snapshot: MatchSnapshot,
+    config: ESPNConfig,
+    state: ESPNState,
+) -> None:
+    total, matched, featured, fallback, signature = player_catalog_coverage(snapshot, config)
+    if not signature or signature == state.player_coverage_signature:
+        return
+    state.player_coverage_signature = signature
+    message = (
+        f"ESPN player catalog: {matched}/{total} named, {featured} featured"
+    )
+    if fallback:
+        preview = ", ".join(fallback[:8])
+        remainder = len(fallback) - min(len(fallback), 8)
+        message += f"; raw-name fallback: {preview}"
+        if remainder:
+            message += f" (+{remainder} more)"
+    print(message, file=sys.stderr)
 
 
 def _event_clock(item: dict[str, Any]) -> str:
@@ -1412,6 +1648,7 @@ def parse_espn_event_facts(
     play_type = str((play.get("type") or {}).get("type") or "").lower()
     text = str(item.get("text") or play.get("text") or "")
     lower_text = text.casefold()
+    score_snapshot = snapshot_at_commentary_score(item, snapshot)
     team = _event_team(item, snapshot)
     primary = _event_player(item, snapshot)
     if team is None and primary and primary.team_name:
@@ -1524,8 +1761,8 @@ def parse_espn_event_facts(
     elif status_code:
         event_type, result = "status", status_code
 
-    home_score_number = _score_number(snapshot.home.score)
-    away_score_number = _score_number(snapshot.away.score)
+    home_score_number = _score_number(score_snapshot.home.score)
+    away_score_number = _score_number(score_snapshot.away.score)
     is_equalizer = bool(
         event_type == "goal"
         and home_score_number is not None
@@ -1646,9 +1883,9 @@ def parse_espn_event_facts(
         awarded_team=awarded_team,
         awarded_team_name=(localized_team_name(config, awarded_team) if awarded_team else ""),
         result=result,
-        score_text=match_score_text(snapshot, config),
-        compact_score_text=compact_match_score_text(snapshot, config),
-        score_speech=match_score_speech(snapshot, config),
+        score_text=match_score_text(score_snapshot, config),
+        compact_score_text=compact_match_score_text(score_snapshot, config),
+        score_speech=match_score_speech(score_snapshot, config),
         shot_body_part=shot_body_part,
         shot_area=shot_area,
         shot_direction=shot_direction,
@@ -1662,6 +1899,265 @@ def parse_espn_event_facts(
     )
 
 
+MAJOR_PERSPECTIVE_EVENTS = frozenset(
+    {
+        "espn_goal",
+        "espn_penalty",
+        "espn_penalty_awarded",
+        "espn_red_card",
+        "espn_status",
+    }
+)
+
+
+def _configured_match_team(
+    snapshot: MatchSnapshot,
+    config: ESPNConfig,
+    configured_name: str,
+) -> MatchTeam | None:
+    if not configured_name:
+        return None
+    return next(
+        (
+            team
+            for team in (snapshot.home, snapshot.away)
+            if is_configured_team(config, configured_name, team)
+        ),
+        None,
+    )
+
+
+def _configured_event_outcome(
+    snapshot: MatchSnapshot,
+    config: ESPNConfig,
+    configured_name: str,
+    event_team: MatchTeam | None,
+    event_team_outcome: int,
+    *,
+    missing: str,
+) -> str:
+    configured_team = _configured_match_team(snapshot, config, configured_name)
+    if configured_team is None or event_team is None or event_team_outcome == 0:
+        return missing
+    same_team = is_configured_team(config, configured_team.name, event_team)
+    benefits = event_team_outcome > 0 if same_team else event_team_outcome < 0
+    return "benefit" if benefits else "harm"
+
+
+def event_perspective(
+    snapshot: MatchSnapshot,
+    config: ESPNConfig,
+    facts: ESPNEventFacts,
+    alert_kind: str,
+) -> EventPerspective:
+    """Return deterministic fan/position impact for one rendered event."""
+
+    is_final = alert_kind == "espn_status" and facts.status_code in {
+        "full_time",
+        "shootout_end",
+    }
+    if is_final:
+        winner = match_winner(snapshot)
+
+        def final_outcome(configured_name: str, missing: str) -> str:
+            configured_team = _configured_match_team(snapshot, config, configured_name)
+            if configured_team is None or winner is None:
+                return missing
+            return (
+                "benefit"
+                if is_configured_team(config, configured_team.name, winner)
+                else "harm"
+            )
+
+        support_outcome = final_outcome(config.favorite_team, "neutral")
+        position_outcome = final_outcome(config.position_team, "none")
+    else:
+        event_team = facts.awarded_team or facts.team
+        if alert_kind in {"espn_goal", "espn_penalty_awarded", "espn_corner"}:
+            team_outcome = 1
+        elif alert_kind == "espn_penalty":
+            team_outcome = 1 if facts.result == "scored" else -1
+        elif alert_kind in {
+            "espn_woodwork",
+            "espn_shot_saved",
+            "espn_close_miss",
+            "espn_shot_blocked",
+            "espn_red_card",
+            "espn_yellow_card",
+            "espn_foul",
+        }:
+            team_outcome = -1
+        elif alert_kind == "espn_opponent_free_kick":
+            team_outcome = 1
+        else:
+            team_outcome = 0
+        support_outcome = _configured_event_outcome(
+            snapshot,
+            config,
+            config.favorite_team,
+            event_team,
+            team_outcome,
+            missing="neutral",
+        )
+        # Routine chances are not strong enough to imply a meaningful position
+        # change.  Position language is reserved for genuinely consequential
+        # events so the commentary still sounds like football commentary.
+        if alert_kind in MAJOR_PERSPECTIVE_EVENTS:
+            position_outcome = _configured_event_outcome(
+                snapshot,
+                config,
+                config.position_team,
+                event_team,
+                team_outcome,
+                missing="none",
+            )
+        else:
+            position_outcome = "none"
+
+    if position_outcome == "none":
+        alignment = "support_only" if support_outcome != "neutral" else "neutral"
+    elif support_outcome == "neutral":
+        alignment = "position_only"
+    elif support_outcome == position_outcome:
+        alignment = "aligned"
+    else:
+        alignment = "conflict"
+    return EventPerspective(support_outcome, position_outcome, alignment)
+
+
+def _configured_team_label(config: ESPNConfig, value: str, fallback: str) -> str:
+    return localized_team_name(config, value) if value else fallback
+
+
+def _major_perspective_reaction(
+    perspective: EventPerspective,
+    config: ESPNConfig,
+    style: str,
+) -> str:
+    support = _configured_team_label(
+        config,
+        config.favorite_team,
+        pick(config.language, "支持的球队", "the supported team"),
+    )
+    position = _configured_team_label(
+        config,
+        config.position_team,
+        pick(config.language, "当前持仓", "the current position"),
+    )
+    good = perspective.support_outcome == "benefit"
+    position_good = perspective.position_outcome == "benefit"
+
+    if config.language == "en":
+        if perspective.alignment == "aligned":
+            return (
+                f"That helps both {support} and the {position} position"
+                if good
+                else f"That hurts both {support} and the {position} position"
+            )
+        if perspective.alignment == "conflict":
+            return (
+                f"Good news for {support}, but the {position} position comes under pressure"
+                if good
+                else f"Tough for {support}, although the {position} position benefits"
+            )
+        if perspective.alignment == "position_only":
+            return (
+                f"The {position} position benefits"
+                if position_good
+                else f"The {position} position comes under pressure"
+            )
+        if perspective.alignment == "support_only":
+            return f"That suits {support}" if good else f"That is a setback for {support}"
+        return ""
+
+    if perspective.alignment == "aligned":
+        if style == "casual":
+            return "这一下看着舒服，仓位也跟着受益" if good else "场面难受，仓位也跟着承压"
+        if style == "professional":
+            return (
+                f"这一变化有利于{support}，也利好{position}持仓"
+                if good
+                else f"这一变化打击{support}，{position}持仓也随之承压"
+            )
+        return (
+            f"支持的{support}占到便宜，{position}仓位也随之受益"
+            if good
+            else f"支持的{support}受到打击，{position}仓位也跟着承压"
+        )
+    if perspective.alignment == "conflict":
+        if good:
+            return (
+                "球迷这边开心，仓位却要承压"
+                if style == "casual"
+                else f"{support}占优，但{position}仓位因此承压"
+            )
+        return (
+            "感情上不好受，不过仓位倒是受益"
+            if style == "casual"
+            else f"{support}受到打击，不过{position}仓位从中受益"
+        )
+    if perspective.alignment == "position_only":
+        if style == "casual":
+            return "这波对仓位有利" if position_good else "这波对仓位不利"
+        return f"这对{position}持仓有利" if position_good else f"这对{position}持仓不利"
+    if perspective.alignment == "support_only":
+        if style == "casual":
+            return "这下舒服了" if good else "这下有点难受"
+        return f"这对支持的{support}是好消息" if good else f"这对支持的{support}不是好消息"
+    return ""
+
+
+def _routine_support_reaction(
+    alert_kind: str,
+    perspective: EventPerspective,
+    config: ESPNConfig,
+    style: str,
+) -> str:
+    outcome = perspective.support_outcome
+    if outcome == "neutral":
+        return ""
+    support = _configured_team_label(config, config.favorite_team, "支持的球队")
+    failed_attack = alert_kind in {
+        "espn_woodwork",
+        "espn_shot_saved",
+        "espn_close_miss",
+        "espn_shot_blocked",
+    }
+    set_piece = alert_kind in {"espn_corner", "espn_opponent_free_kick"}
+    yellow_card = alert_kind == "espn_yellow_card"
+    foul = alert_kind == "espn_foul"
+    good = outcome == "benefit"
+    if config.language == "en":
+        if failed_attack:
+            return f"{support} survives the danger" if good else f"A chance goes begging for {support}"
+        if set_piece:
+            return f"A useful opening for {support}" if good else f"{support} must defend this carefully"
+        if yellow_card or foul:
+            return f"That helps {support}" if good else f"That is costly for {support}"
+        return ""
+    if failed_attack:
+        if style == "casual":
+            return "还好，这次守住了" if good else "可惜，这次机会没能兑现"
+        if style == "professional":
+            return f"{support}暂时化解险情" if good else f"{support}这次进攻未能转化为进球"
+        return f"{support}躲过一次威胁" if good else f"{support}错过一次机会"
+    if set_piece:
+        if style == "casual":
+            return "机会来了" if good else "这下要小心"
+        if style == "professional":
+            return f"{support}获得继续施压的机会" if good else f"{support}需要应对这次定位球"
+        return f"{support}迎来进攻机会" if good else f"{support}接下来要注意防守"
+    if yellow_card:
+        if style == "casual":
+            return "对面吃牌，对我们有利" if good else "这张牌不太划算"
+        return f"这张牌对{support}有利" if good else f"这张牌对{support}不利"
+    if foul:
+        if style == "casual":
+            return "对面这次犯规对我们有利" if good else "这次犯规不太划算"
+        return f"这次判罚有利于{support}" if good else f"这次判罚对{support}不利"
+    return ""
+
+
 def _fact_actor(facts: ESPNEventFacts, config: ESPNConfig) -> str:
     player = facts.primary_player_name
     team = facts.team_name
@@ -1673,7 +2169,8 @@ def _fact_actor(facts: ESPNEventFacts, config: ESPNConfig) -> str:
 def _compact_player_name(config: ESPNConfig, player: MatchPlayer | None) -> str:
     if player is None or not config.announce_player_names:
         return ""
-    configured = _configured_player_text(config.player_names, player)
+    profile = _resolved_player_profile(config, player)
+    configured = profile.display_name if profile else ""
     if config.language == "en":
         candidates = [
             value.split()[-1]
@@ -1852,17 +2349,29 @@ def _shot_attempt_text(facts: ESPNEventFacts, config: ESPNConfig) -> str:
     return f"{area}{attempt}" if area or attempt else ""
 
 
-def _delivery_text(facts: ESPNEventFacts, config: ESPNConfig) -> str:
+def _delivery_text(
+    facts: ESPNEventFacts,
+    config: ESPNConfig,
+    *,
+    assisted_goal: bool = True,
+) -> str:
     if not facts.assistant_name:
         return ""
     assistant_name = facts.assistant_name
     if config.language == "en" and facts.assistant is not None:
         assistant_name = localized_player_name(config, facts.assistant)
-    descriptions = {
-        "cross": pick(config.language, "传中助攻", "supplies the assist with a cross"),
-        "through_ball": pick(config.language, "直塞助攻", "supplies the assist with a through ball"),
-        "pass": pick(config.language, "送出助攻", "supplies the assist"),
-    }
+    if assisted_goal:
+        descriptions = {
+            "cross": pick(config.language, "传中助攻", "supplies the assist with a cross"),
+            "through_ball": pick(config.language, "直塞助攻", "supplies the assist with a through ball"),
+            "pass": pick(config.language, "送出助攻", "supplies the assist"),
+        }
+    else:
+        descriptions = {
+            "cross": pick(config.language, "送出传中", "supplies the cross"),
+            "through_ball": pick(config.language, "送出直塞", "supplies the through ball"),
+            "pass": pick(config.language, "送出传球", "supplies the pass"),
+        }
     detail = descriptions.get(facts.delivery)
     if not detail:
         return ""
@@ -1924,7 +2433,7 @@ def _status_speech(status_code: str, config: ESPNConfig, casual: bool) -> str:
         professional = {
             "kickoff": "比赛正式开球",
             "halftime": "裁判吹响半场结束哨",
-            "second_half": "下半场比赛开始",
+            "second_half": "下半场开始",
             "end_regular": "常规时间结束",
             "end_extra": "加时赛结束",
             "shootout_start": "点球大战开始",
@@ -1942,6 +2451,250 @@ def _status_speech(status_code: str, config: ESPNConfig, casual: bool) -> str:
             "full_time": "比赛结束，最终结果出炉",
         }
     return (friendly if casual else professional).get(status_code, "")
+
+
+def _contextual_score_speech(base: Alert, facts: ESPNEventFacts) -> str:
+    score = facts.score_speech
+    if not score:
+        return ""
+    if base.kind == "espn_status":
+        if facts.status_code in {"full_time", "shootout_end"}:
+            if "点球比分" in score:
+                return f"最终，{score}"
+            if "领先" in score:
+                return score.replace("领先", "战胜", 1)
+            if "打成" in score:
+                teams, _, scoreline = score.partition("打成")
+                return f"{teams.replace('和', '与', 1)}{scoreline}战平"
+            return f"最终比分，{score}"
+        if facts.status_code in {"halftime", "second_half"}:
+            return f"半场比分，{score}"
+        return score
+    if base.kind == "espn_goal" or (
+        base.kind == "espn_penalty" and facts.result == "scored"
+    ):
+        return score
+    if base.kind in {"espn_drinks_break", "espn_drinks_break_end"}:
+        return f"当前比分，{score}"
+    return f"比分仍是{score}"
+
+
+def _chinese_espn_speech(
+    base: Alert,
+    facts: ESPNEventFacts,
+    config: ESPNConfig,
+    style: str,
+    perspective: EventPerspective,
+) -> str:
+    """Build natural Chinese from parsed facts, never from ESPN prose."""
+
+    clock = _spoken_clock(facts, config)
+    team = facts.awarded_team_name or facts.team_name or "场上球队"
+    player = facts.primary_player_name
+    if base.kind in {
+        "espn_red_card",
+        "espn_yellow_card",
+        "espn_foul",
+        "espn_substitution",
+        "espn_woodwork",
+        "espn_shot_saved",
+        "espn_close_miss",
+        "espn_shot_blocked",
+    } or (base.kind == "espn_penalty" and facts.result != "scored"):
+        # Nicknames are for successful/highlight moments.  Failed attacks,
+        # disciplinary events, and personnel changes stay on the formal name.
+        player = localized_player_name(config, facts.primary_player)
+    actor = player or team or "场上球员"
+    keeper = facts.goalkeeper_name or "门将"
+    incoming = (
+        localized_player_name(config, facts.incoming)
+        if base.kind == "espn_substitution"
+        else facts.incoming_name
+    ) or "替补球员"
+    outgoing = (
+        localized_player_name(config, facts.outgoing)
+        if base.kind == "espn_substitution"
+        else facts.outgoing_name
+    ) or "场上球员"
+    attempt = _shot_attempt_text(facts, config) or "攻门"
+    located_areas = {
+        "six_yard_box",
+        "centre_of_box",
+        "left_of_box",
+        "right_of_box",
+        "outside_box",
+        "far_post",
+    }
+    attempt_actor = f"{actor}{'在' if facts.shot_area in located_areas else ''}{attempt}"
+
+    def open_play_delivery() -> str:
+        if style == "professional":
+            return ""
+        delivery = _delivery_text(facts, config, assisted_goal=False)
+        if not delivery:
+            return ""
+        return f"{delivery}，"
+
+    def team_action(action: str) -> str:
+        if not player:
+            return f"{team}{action}"
+        if style == "professional":
+            return f"{team}球员{player}{action}"
+        return f"{team}这边，{player}{action}"
+
+    core = base.speech or ""
+    extra_after_score = ""
+    if base.kind == "espn_goal":
+        if player:
+            if facts.is_equalizer:
+                action = "扳平比分"
+            elif style == "casual" and perspective.support_outcome != "harm":
+                action = "破门啦"
+            elif style == "professional":
+                action = "完成破门"
+            else:
+                action = "打进一球"
+            core = f"{clock}{player}为{team}{action}"
+        else:
+            core = f"{clock}{team}{'扳平比分' if facts.is_equalizer else '取得进球'}"
+        chant = render_star_chant(config, facts.primary_player, facts.team_name)
+        if (
+            chant
+            and config.announce_player_names
+            and style == "casual"
+            and perspective.support_outcome == "benefit"
+            and player in chant
+        ):
+            chant = chant if chant.endswith(("。", "！", "？", "!", "?")) else f"{chant}！"
+            goal_is_explicit = any(
+                phrase in chant for phrase in ("进球", "打进", "破门", "球进", "命中")
+            )
+            if not goal_is_explicit:
+                core = join_sentences("zh", f"{clock}{chant}", f"{team}进球了")
+            else:
+                core = f"{clock}{chant}"
+    elif base.kind == "espn_penalty":
+        if facts.result == "scored":
+            core = (
+                f"{clock}{player}为{team}主罚点球并命中"
+                if player
+                else f"{clock}{team}点球命中"
+            )
+        elif facts.result == "saved":
+            core = (
+                f"{clock}{player}为{team}主罚的点球被{keeper}扑出"
+                if player
+                else f"{clock}{team}的点球被{keeper}扑出"
+            )
+        else:
+            core = (
+                f"{clock}{player}为{team}主罚点球未能命中"
+                if player
+                else f"{clock}{team}主罚点球未能命中"
+            )
+    elif base.kind == "espn_penalty_awarded":
+        core = f"{clock}裁判判罚点球，{team}获得主罚机会"
+        if facts.beneficiary_name:
+            core += f"，{facts.beneficiary_name}在禁区内造点"
+    elif base.kind == "espn_substitution":
+        verb = "换人" if style != "professional" else "完成换人调整"
+        core = f"{clock}{team}{verb}，{incoming}登场，换下{outgoing}"
+        if facts.injury_reason:
+            extra_after_score = f"{outgoing}因伤被换下"
+    elif base.kind == "espn_woodwork":
+        core = f"{clock}{team}这次进攻，{open_play_delivery()}{attempt_actor}击中门框"
+    elif base.kind == "espn_shot_saved":
+        core = f"{clock}{team}这次进攻，{open_play_delivery()}{attempt_actor}，被{keeper}扑出"
+    elif base.kind == "espn_close_miss":
+        result = "擦着门边偏出" if facts.close_miss else "偏出球门"
+        core = f"{clock}{team}这次进攻，{open_play_delivery()}{attempt_actor}{result}"
+    elif base.kind == "espn_shot_blocked":
+        core = f"{clock}{team}这次进攻，{open_play_delivery()}{attempt_actor}被防守球员封堵"
+    elif base.kind == "espn_red_card":
+        if player:
+            result = "两黄变一红" if facts.result == "second_yellow" else "吃到红牌"
+            core = f"{clock}{player}{result}，{team}被罚下一人"
+        else:
+            core = f"{clock}{team}有球员被红牌罚下"
+    elif base.kind == "espn_yellow_card":
+        if style == "professional":
+            core = (
+                f"{clock}裁判向{team}球员{player}出示黄牌警告"
+                if player
+                else f"{clock}裁判向{team}一名球员出示黄牌"
+            )
+        else:
+            core = f"{clock}{team_action('吃到黄牌')}"
+    elif base.kind == "espn_corner":
+        core = f"{clock}{team}{'赢得' if style == 'casual' else '获得'}一个角球"
+    elif base.kind == "espn_opponent_free_kick":
+        locations = {
+            "attacking_half": "前场",
+            "left_wing": "左路",
+            "right_wing": "右路",
+            "defensive_half": "后场",
+        }
+        location = locations.get(facts.set_piece_location, "")
+        core = f"{clock}{team}赢得{location}任意球"
+        if facts.beneficiary_name:
+            core += f"，{facts.beneficiary_name}造到犯规"
+    elif base.kind == "espn_foul":
+        core = f"{clock}{team_action('犯规，裁判鸣哨')}"
+    elif base.kind == "espn_drinks_break":
+        core = "比赛进入补水时间，先歇口气"
+    elif base.kind == "espn_drinks_break_end":
+        core = "补水结束，比赛继续"
+    elif base.kind == "espn_status":
+        core = _status_speech(facts.status_code, config, casual=style == "casual") or core
+
+    parts = [core, _contextual_score_speech(base, facts)]
+    if style == "professional":
+        assist = _delivery_text(
+            facts,
+            config,
+            assisted_goal=base.kind == "espn_goal",
+        )
+        direction = _direction_text(facts, config)
+        set_piece = _set_piece_context_text(facts, config)
+        if base.kind == "espn_goal":
+            finish: list[str] = []
+            if assist:
+                finish.append(assist)
+            if facts.primary_player_name and _shot_attempt_text(facts, config):
+                finish.append(
+                    f"{facts.primary_player_name}{'在' if facts.shot_area else ''}{_shot_attempt_text(facts, config)}"
+                )
+            if direction:
+                finish.append(f"皮球进入{direction}")
+            if finish:
+                parts.append("，".join(finish))
+            if set_piece:
+                parts.append(set_piece)
+        elif base.kind in {
+            "espn_woodwork",
+            "espn_shot_saved",
+            "espn_close_miss",
+            "espn_shot_blocked",
+        }:
+            detail: list[str] = []
+            if assist:
+                detail.append(assist)
+            if direction:
+                detail.append(f"射门攻向{direction}")
+            if detail:
+                parts.append("，".join(detail))
+            if set_piece:
+                parts.append(set_piece)
+    if extra_after_score:
+        parts.append(extra_after_score)
+
+    if base.kind in MAJOR_PERSPECTIVE_EVENTS:
+        reaction = _major_perspective_reaction(perspective, config, style)
+    else:
+        reaction = _routine_support_reaction(base.kind, perspective, config, style)
+    if reaction:
+        parts.append(reaction)
+    return join_sentences(config.language, *parts)
 
 
 def _casual_espn_speech(base: Alert, facts: ESPNEventFacts, config: ESPNConfig) -> str:
@@ -2050,7 +2803,11 @@ def _professional_espn_speech(base: Alert, facts: ESPNEventFacts, config: ESPNCo
     if config.language == "en" and facts.beneficiary is not None:
         beneficiary_name = localized_player_name(config, facts.beneficiary)
     attempt = _shot_attempt_text(facts, config)
-    assist = _delivery_text(facts, config)
+    assist = _delivery_text(
+        facts,
+        config,
+        assisted_goal=base.kind == "espn_goal",
+    )
     direction = _direction_text(facts, config)
     set_piece_context = _set_piece_context_text(facts, config)
 
@@ -2266,20 +3023,27 @@ def render_espn_alert(
     alert: Alert,
     facts: ESPNEventFacts,
     config: ESPNConfig,
+    snapshot: MatchSnapshot,
 ) -> Alert:
     """Apply the selected voice template while preserving alert behavior."""
 
     style = normalize_commentary_style(config.commentary_style)
+    perspective = event_perspective(snapshot, config, facts, alert.kind)
     alert.balloon = _compact_espn_balloon(alert, facts, config)
-    if style == "casual":
+    if config.language == "zh":
+        alert.speech = _chinese_espn_speech(alert, facts, config, style, perspective)
+    elif style == "casual":
         alert.speech = _casual_espn_speech(alert, facts, config)
     elif style == "professional":
         alert.speech = _professional_espn_speech(alert, facts, config)
 
-    # Every template carries the same score fact. Existing balanced wording is
-    # retained verbatim before the missing score sentence is appended.
+    # English keeps the legacy templates and gets a score appended when needed.
+    # Chinese already renders a context-aware score (lead/still level/final),
+    # so appending the raw live-score phrase would duplicate or contradict it.
     speech = alert.speech or ""
     if (
+        config.language == "en"
+        and
         facts.score_speech
         and facts.score_speech.casefold() not in speech.casefold()
     ):
@@ -2287,6 +3051,14 @@ def render_espn_alert(
     spoken_clock = _spoken_clock(facts, config)
     if spoken_clock and not (alert.speech or "").startswith(spoken_clock):
         alert.speech = f"{spoken_clock}{alert.speech or ''}"
+    if config.language == "en":
+        reaction = (
+            _major_perspective_reaction(perspective, config, style)
+            if alert.kind in MAJOR_PERSPECTIVE_EVENTS
+            else _routine_support_reaction(alert.kind, perspective, config, style)
+        )
+        if reaction:
+            alert.speech = join_sentences(config.language, alert.speech or "", reaction)
     return alert
 
 
@@ -2954,9 +3726,14 @@ def alert_for_espn_commentary(
     snapshot: MatchSnapshot,
     config: ESPNConfig,
 ) -> Alert | None:
-    facts = parse_espn_event_facts(item, snapshot, config)
-    alert = _balanced_alert_for_espn_commentary(item, snapshot, config)
-    return render_espn_alert(alert, facts, config) if alert is not None else None
+    event_snapshot = snapshot_at_commentary_score(item, snapshot)
+    facts = parse_espn_event_facts(item, event_snapshot, config)
+    alert = _balanced_alert_for_espn_commentary(item, event_snapshot, config)
+    return (
+        render_espn_alert(alert, facts, config, event_snapshot)
+        if alert is not None
+        else None
+    )
 
 
 def _status_change_alert(snapshot: MatchSnapshot, config: ESPNConfig) -> Alert | None:
@@ -2999,7 +3776,7 @@ def _status_change_alert(snapshot: MatchSnapshot, config: ESPNConfig) -> Alert |
         "play": {"type": {"type": "full-time" if snapshot.status_state == "post" else "kickoff"}},
     }
     facts = parse_espn_event_facts(synthetic_item, snapshot, config)
-    return render_espn_alert(alert, facts, config)
+    return render_espn_alert(alert, facts, config, snapshot)
 
 
 def _alert_with_source(
@@ -3113,36 +3890,58 @@ def speech_for_price_move(snapshot: MarketSnapshot, config: MarketConfig, delta:
     if config.language == "en":
         direction = "up" if delta > 0 else "down"
         intensity = " sharply" if abs(delta) >= config.speak_move_cents else ""
+        position_sentence = ""
+        if config.tracks_position:
+            position_sentence = (
+                " This move benefits the current position."
+                if delta > 0
+                else " This move puts the current position under pressure."
+            )
         if style == "casual":
             return (
                 f"Heads up—{snapshot.label} {side_text(config.side_i_care)} just moved "
                 f"{direction}{intensity} by {english_quantity(abs(delta), 'cent')} "
-                f"to {english_quantity(mid, 'cent')}."
+                f"to {english_quantity(mid, 'cent')}.{position_sentence}"
             )
         if style == "professional":
+            move_direction = "upward" if delta > 0 else "downward"
+            move_intensity = "sharp " if abs(delta) >= config.speak_move_cents else ""
             return (
                 f"{snapshot.label} {side_text(config.side_i_care)} midpoint is now "
-                f"{english_quantity(mid, 'cent')}, a {direction}{intensity} move of "
+                f"{english_quantity(mid, 'cent')}, a {move_intensity}{move_direction} move of "
                 f"{english_quantity(abs(delta), 'cent')} from the previous alert baseline."
+                f"{position_sentence}"
             )
         return (
             f"{snapshot.label} {side_text(config.side_i_care)} midpoint is "
             f"{english_quantity(mid, 'cent')}, {direction}{intensity} by "
             f"{english_quantity(abs(delta), 'cent')} since the last alert."
+            f"{position_sentence}"
         )
     direction = "涨了" if delta > 0 else "跌了"
     intensity = "大幅" if abs(delta) >= config.speak_move_cents else ""
+    position_impact = ""
+    if config.tracks_position:
+        position_impact = "这波对持仓有利" if delta > 0 else "这波让持仓承压"
+    position_suffix = f"{position_impact}。" if position_impact else ""
     if style == "casual":
         return (
-            f"家人们，{snapshot.label} {side_text(config.side_i_care)} 盘口{intensity}{direction}"
-            f"{abs(delta)}分，现在是{mid}分。"
+            f"提醒一下，{snapshot.label} {side_text(config.side_i_care)} "
+            f"刚刚{intensity}{direction}{abs(delta)}分，来到{mid}分。{position_suffix}"
         )
     if style == "professional":
+        position_sentence = ""
+        if config.tracks_position:
+            position_sentence = "当前持仓受益。" if delta > 0 else "当前持仓承压。"
         return (
-            f"{snapshot.label} {side_text(config.side_i_care)} 中间价现报{mid}分，"
-            f"较上次告警基线{intensity}{direction}{abs(delta)}分。"
+            f"{snapshot.label} {side_text(config.side_i_care)} 中间价"
+            f"{'升' if delta > 0 else '降'}至{mid}分，较上次变动{abs(delta)}分。"
+            f"{position_sentence}"
         )
-    return f"{snapshot.label} {side_text(config.side_i_care)} 中间价{mid}分，比上次{intensity}{direction}{abs(delta)}分。"
+    return (
+        f"{snapshot.label} {side_text(config.side_i_care)} 现为{mid}分，"
+        f"较上次{intensity}{direction}{abs(delta)}分。{position_suffix}"
+    )
 
 
 def speech_for_market_goal_signal(
@@ -3163,6 +3962,72 @@ def speech_for_market_goal_signal(
     goal_team = configured_team or (
         snapshot.label if rising else pick(config.language, "对手方", "the opposing side")
     )
+
+    def add_view_context(speech: str) -> str:
+        known_goal_teams = {
+            name.casefold()
+            for name in (config.goal_signal_up_team, config.goal_signal_down_team)
+            if name
+        }
+        support_known = bool(
+            config.favorite_team
+            and config.favorite_team.casefold() in known_goal_teams
+        )
+        support_good = bool(
+            support_known
+            and config.favorite_team.casefold() == goal_team.casefold()
+        )
+        position_known = bool(config.tracks_position and config.position_team)
+        position_good = rising
+        if config.language == "en":
+            if support_known and position_known:
+                if support_good == position_good:
+                    note = (
+                        "If confirmed, both the supported team and the position benefit"
+                        if support_good
+                        else "If confirmed, both the supported team and the position suffer"
+                    )
+                else:
+                    note = (
+                        "If confirmed, that helps the supported team but hurts the position"
+                        if support_good
+                        else "If confirmed, that hurts the supported team but helps the position"
+                    )
+            elif support_known:
+                note = (
+                    "If confirmed, that helps the supported team"
+                    if support_good
+                    else "If confirmed, that hurts the supported team"
+                )
+            elif position_known:
+                note = (
+                    "If confirmed, the current position benefits"
+                    if position_good
+                    else "If confirmed, the current position comes under pressure"
+                )
+            else:
+                note = ""
+        else:
+            if support_known and position_known:
+                if support_good == position_good:
+                    note = (
+                        "如果属实，支持的球队和仓位都会受益"
+                        if support_good
+                        else "如果属实，支持的球队和仓位都会受损"
+                    )
+                else:
+                    note = (
+                        "如果属实，球迷这边开心，仓位却会承压"
+                        if support_good
+                        else "如果属实，感情上不好受，不过仓位会受益"
+                    )
+            elif support_known:
+                note = "如果属实，这是支持方的好消息" if support_good else "如果属实，这对支持方不利"
+            elif position_known:
+                note = "如果属实，当前仓位会受益" if position_good else "如果属实，当前仓位会承压"
+            else:
+                note = ""
+        return join_sentences(config.language, speech, note) if note else speech
 
     def ensure_uncertainty(speech: str) -> str:
         lower = speech.casefold()
@@ -3223,42 +4088,44 @@ def speech_for_market_goal_signal(
             safe = f"盘口突变，{goal_team}疑似进球，等待文字直播确认。"
             confirmation_suffix = "仍需等待文字直播确认。"
         if not uncertain or has_unqualified_claim():
-            return safe
+            return add_view_context(safe)
         if awaiting:
-            return speech
-        return join_sentences(config.language, speech, confirmation_suffix)
+            return add_view_context(speech)
+        return add_view_context(join_sentences(config.language, speech, confirmation_suffix))
 
     if style == "balanced" and configured:
         return ensure_uncertainty(configured)
     if config.language == "en":
         direction = "jumped" if rising else "dropped"
         if style == "casual":
-            return (
+            return add_view_context(
                 f"Heads up—{snapshot.label} just {direction} {abs(rapid_delta)} cents "
                 f"to {mid}. Possible goal, but hold the celebration; awaiting commentary confirmation."
                 f" The signal points to {goal_team}."
             )
         if style == "professional":
-            return (
+            return add_view_context(
                 f"{snapshot.label} shows a rapid {'upward' if rising else 'downward'} move of "
                 f"{abs(rapid_delta)} cents to {mid}. This is only a possible goal signal; "
                 f"it points to {goal_team}, awaiting commentary confirmation."
             )
-        return (
+        return add_view_context(
             f"The market just {direction} sharply. Possible goal for {goal_team}; "
             "awaiting commentary confirmation."
         )
     if style == "casual":
-        return (
-            f"家人们，{snapshot.label}盘口突然{'拉升' if rising else '跳水'}{abs(rapid_delta)}分，"
-            f"现在{mid}分。{goal_team}疑似进球，先别急着庆祝，等待文字直播确认。"
+        return add_view_context(
+            f"先别急，{snapshot.label}盘口突然{'拉升' if rising else '跳水'}{abs(rapid_delta)}分，"
+            f"来到{mid}分。{goal_team}进球的可能性更大，不过目前还只是疑似，"
+            "要等文字直播确认。"
         )
     if style == "professional":
-        return (
+        return add_view_context(
             f"{snapshot.label}盘口快速{'上行' if rising else '下挫'}{abs(rapid_delta)}分至{mid}分。"
-            f"信号指向{goal_team}疑似进球，等待文字直播确认。"
+            f"{goal_team}进球的可能性上升，但目前仍属疑似，"
+            "等待文字直播确认。"
         )
-    return (
+    return add_view_context(
         f"盘口突然{'拉升' if rising else '跳水'}，"
         f"{goal_team}疑似进球，等待文字直播确认。"
     )
@@ -4521,6 +5388,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 espn_state.last_polled_at = cycle_monotonic
                 try:
                     match = fetch_espn_match(config.espn)
+                    report_player_catalog_coverage(match, config.espn, espn_state)
                     if setup_service:
                         style_after_fetch = setup_service.take_commentary_style_update()
                         if style_after_fetch:

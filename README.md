@@ -12,9 +12,11 @@ from a phone.
 > [!IMPORTANT]
 > This is a read-only match companion. It does not trade, access a Kalshi
 > account, or provide betting advice. `position_team` is a manually entered
-> preference used only to choose the post-match reaction. Kalshi data comes
-> from its public REST API; ESPN data comes from publicly reachable,
-> undocumented endpoints that may change or lag behind the broadcast.
+> preference: the watcher describes its benefit or pressure around major ESPN
+> events, results, and Kalshi moves from a confirmed matching position market,
+> but never reads a real account. Kalshi data comes from its public REST API;
+> ESPN data comes from publicly reachable, undocumented endpoints that may
+> change or lag behind the broadcast.
 
 ## Features
 
@@ -22,6 +24,8 @@ from a phone.
 - Goal, card, substitution, close-miss, match-state, and final-result reactions.
 - Three switchable commentary styles: casual co-watching, balanced narration,
   and professional play-by-play with ESPN-supplied detail.
+- Separate support and position perspectives: routine play follows the team you
+  support, while major events add position impact and acknowledge conflicts.
 - A phone setup page hosted by Stack-chan, with live Chinese/English switching.
 - Double-tap head-touch and Power-button shortcuts for the setup QR code.
 - Fixture discovery, adaptive polling, hot configuration reload, and quiet hours.
@@ -78,7 +82,8 @@ not the primary QR flow.
 - `tools/` — the watcher, local setup service, macOS TTS server, replay tool,
   serial helper, asset generator, and tests. The default HTTP workflow uses the
   Python standard library; serial transport additionally requires `pyserial`.
-- `config/` — the example watcher configuration and flag-pack definition.
+- `config/` — the example watcher configuration, flag-pack definition, and
+  global ESPN player catalog.
 - `docs/` — the [commentary-styles PRD](docs/commentary-styles-prd.md) and
   version-specific upgrade notes, including the bilingual
   [Matchday MOD 1.5.0 notes](docs/releases/1.5.0.md) and
@@ -111,6 +116,11 @@ Already running an earlier Matchday release? For 1.4.0 commentary styles,
 update this watcher checkout and reinstall the Matchday mod. You do not need
 to rebuild or reflash the official host firmware or replace the TTS module;
 see the [1.4.0 release notes](docs/releases/1.4.0.md).
+
+Support/position-aware wording, position-based market selection, and the global
+player catalog are watcher-only updates. An installed 1.5.0 mod can stay in
+place. Deploy both the watcher code and `config/espn_player_catalog.json`, then
+restart the Python watcher process; the mod and host do not need reflashing.
 
 ### 1. Clone and prepare the upstream build environment
 
@@ -277,8 +287,9 @@ falls back to short tone patterns.
 3. **Scan and choose.** Open the QR on a phone, choose 中文 or English, select a
    match, your team (or Neutral), an optional pregame position (or No
    position), and a commentary style, then tap **Start watching**. The
-   position is only a manual final result reaction preference; no account is
-   read.
+   Match Setup enables the Kalshi market for the selected position team; with
+   No position, it enables the first market in the match pair. The position is
+   still only a manual preference and no account is read.
 4. **Wait for confirmation.** The page first says that it is waiting for the
    watcher. The watcher validates the ESPN/Kalshi pairing, atomically updates
    the local configuration, hot-reloads, and acknowledges the device. No
@@ -341,9 +352,20 @@ User-facing text accepts either a legacy string or a localized object:
 }
 ```
 
-The same localized leaf format works for `player_names`, `star_chants`, and
-custom goal-signal speech. Missing English names fall back to ESPN's source
-name. A legacy string is used verbatim in both modes.
+The watcher first consults the global `config/espn_player_catalog.json`, keyed
+by stable ESPN athlete IDs such as `espn:362150`. Entries contain formal
+Chinese/English names, manually verified casual nicknames, a featured-player
+flag, and an optional goal chant. `balanced`, `professional`, and every device
+balloon always use the formal name; only casual speech may use a friendly
+nickname. Legacy per-match `player_names` and `star_chants` remain supported
+and override the catalog, and custom goal-signal speech keeps the same
+localized-leaf format.
+
+An unmatched player falls back to ESPN's original name; the watcher neither
+transliterates nor invents a nickname. When an ESPN roster first appears or
+changes, the watcher logs named and featured coverage plus the raw-name
+fallback list so the catalog can be completed before a later match without
+blocking commentary.
 
 ### Commentary styles
 
@@ -369,6 +391,15 @@ reads the raw English commentary aloud or guesses missing detail.
 Across all three styles, balloons normally stay in the form “time +
 player/team + event + score”; only punctuation and a small amount of wording
 vary.
+
+The supported team sets the everyday co-watching point of view. Routine shots,
+saves, and corners do not force a position aside. Major ESPN events such as
+goals, penalties, red cards, and results add whether the declared position
+benefits or comes under pressure; aligned support and position are combined,
+while a conflict explicitly separates the emotional and position outcomes.
+Only a Kalshi market that Match Setup has matched to the selected position and
+marked `tracks_position` uses position wording for price moves or suspected
+goals. Suspected events still say “if confirmed” and await commentary.
 
 The selected style also applies to match phases and results, Kalshi market
 jumps, and suspected-goal alerts. It changes wording only: TTS voice and rate,
