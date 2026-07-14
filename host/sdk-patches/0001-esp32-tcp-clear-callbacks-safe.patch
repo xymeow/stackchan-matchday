@@ -1,0 +1,125 @@
+diff --git a/modules/io/socket/lwip/tcp.c b/modules/io/socket/lwip/tcp.c
+index 0f90023..63a2820 100644
+--- a/modules/io/socket/lwip/tcp.c
++++ b/modules/io/socket/lwip/tcp.c
+@@ -262,6 +262,11 @@ void xs_tcp_destructor(void *data)
+ void removeTCPCallbacks(TCP tcp)
+ {
+ 	if (tcp->skt) {
++		// Testing the maintainer-suggested variant (moddable#1655): clear the
++		// callback argument first so any late callback observes NULL (the
++		// guards in tcpReceive/tcpSent/tcpError), then clear the callbacks
++		// with plain pointer stores — no tcpip-thread marshaling.
++		tcp_arg(tcp->skt, NULL);
+ 		tcp_recv(tcp->skt, NULL);
+ 		tcp_sent(tcp->skt, NULL);
+ 		tcp_err(tcp->skt, NULL);
+@@ -358,7 +363,11 @@ void xs_tcp_read(xsMachine *the)
+ 			buffer->fragment = fragment->next;
+ 			buffer->fragmentOffset = 0;
+ 			if (NULL == buffer->fragment) {
++				// Detach under the same guard tcpReceive uses to append, so
++				// its tail walk never lands on a node about to be freed.
++				builtinCriticalSectionBegin();
+ 				tcp->buffers = buffer->next;
++				builtinCriticalSectionEnd();
+ 				tcp_recved_safe(tcp->skt, buffer->pb->tot_len);
+ 				pbuf_free_safe(buffer->pb);
+ 				c_free(buffer);
+@@ -535,6 +544,9 @@ void tcpError(void *arg, err_t err)
+ {
+ 	TCP tcp = arg;
+ 
++	if (NULL == tcp)		// callbacks cleared during teardown
++		return;
++
+ 	removeTCPCallbacks(tcp);
+ 	tcp->skt = NULL;		// "pcb is already freed when this callback is called"
+ 	if (kTCPError & tcp->triggerable)
+@@ -546,6 +558,12 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+ 	TCP tcp = arg;
+ 	TCPBuffer buffer;
+ 
++	if (NULL == tcp) {		// callbacks cleared during teardown
++		if (pb)
++			pbuf_free(pb);
++		return ERR_OK;
++	}
++
+ 	if ((NULL == pb) || (ERR_OK != err)) {		//@@ when is err set here?
+ 		removeTCPCallbacks(tcp);
+ #if ESP32
+@@ -572,6 +590,10 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+ 
+ 	modInstrumentationAdjust(NetworkBytesRead, buffer->bytes);
+ 
++	// The XS task pops and frees head nodes in xs_tcp_read concurrently with
++	// this append; guard the pointer surgery so the tail walk cannot traverse
++	// a node being detached/freed.
++	builtinCriticalSectionBegin();
+ 	if (tcp->buffers) {
+ 		TCPBuffer walker;
+ 
+@@ -581,6 +603,7 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+ 	}
+ 	else
+ 		tcp->buffers = buffer;
++	builtinCriticalSectionEnd();
+ 
+ 	if (tcp->triggerable & kTCPReadable)
+ 		tcpTrigger(tcp, kTCPReadable);
+@@ -590,6 +613,9 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+ 
+ err_t tcpSent(void *arg, struct tcp_pcb *pcb, u16_t len)
+ {
++	if (NULL == arg)		// callbacks cleared during teardown
++		return ERR_OK;
++
+ 	tcpTrigger((TCP)arg, kTCPWritable);
+ 	return ERR_OK;
+ }
+diff --git a/modules/network/socket/lwip/modLwipSafe.c b/modules/network/socket/lwip/modLwipSafe.c
+index a4cc7fb..dc699dd 100644
+--- a/modules/network/socket/lwip/modLwipSafe.c
++++ b/modules/network/socket/lwip/modLwipSafe.c
+@@ -169,6 +169,28 @@ void tcp_recved_safe(struct tcp_pcb *tcpPCB, u16_t len)
+ 	tcpip_callback_with_block(tcp_recved_INLWIP, msg, 1);
+ }
+ 
++static err_t tcp_clear_callbacks_INLWIP(struct tcpip_api_call_data *tcpMsg)
++{
++	LwipMsg msg = (LwipMsg)tcpMsg;
++	if (msg->tcpPCB) {
++		tcp_arg(msg->tcpPCB, NULL);
++		tcp_recv(msg->tcpPCB, NULL);
++		tcp_sent(msg->tcpPCB, NULL);
++		tcp_err(msg->tcpPCB, NULL);
++	}
++	return ERR_OK;
++}
++
++// Synchronous: when this returns, no lwIP callback for this pcb is running
++// or can run again, so the caller may safely free its callback argument.
++void tcp_clear_callbacks_safe(struct tcp_pcb *tcpPCB)
++{
++	LwipMsgRecord msg = {
++		.tcpPCB = tcpPCB,
++	};
++	tcpip_api_call(tcp_clear_callbacks_INLWIP, &msg.call);
++}
++
+ static err_t tcp_listen_INLWIP(struct tcpip_api_call_data *tcpMsg)
+ {
+ 	LwipMsg msg = (LwipMsg)tcpMsg;
+diff --git a/modules/network/socket/lwip/modLwipSafe.h b/modules/network/socket/lwip/modLwipSafe.h
+index 717808d..0f5c94f 100644
+--- a/modules/network/socket/lwip/modLwipSafe.h
++++ b/modules/network/socket/lwip/modLwipSafe.h
+@@ -52,6 +52,7 @@
+ 	#include "lwip/raw.h"
+ 
+ 	struct tcp_pcb *tcp_new_safe(void);
++	void tcp_clear_callbacks_safe(struct tcp_pcb *tcpPCB);
+ 	err_t tcp_connect_safe(struct tcp_pcb *tcpPCB, const ip_addr_t *ipaddr, u16_t port, tcp_connected_fn connected);
+ 	u8_t pbuf_free_safe(struct pbuf *p);
+ 	err_t tcp_bind_safe(struct tcp_pcb *tcpPCB, const ip_addr_t *ipaddr, u16_t port);

@@ -126,6 +126,50 @@ class ModLayoutTests(unittest.TestCase):
         self.assertIn("data.pending&&data.pending.commentary_style", page)
         self.assertIn("result.status ?? 400", WEB_SOURCE)
 
+    def test_device_setup_page_queues_persistent_spoiler_free_changes(self):
+        self.assertIn("MOD_VERSION = '1.6.0'", STATE_SOURCE)
+        self.assertIn("spoilerFreeMode: false", STATE_SOURCE)
+        self.assertIn('name="spoiler_free_mode" value="false"', WEB_SOURCE)
+        self.assertIn('name="spoiler_free_mode" value="true"', WEB_SOURCE)
+        self.assertIn("spoilerNormal:'普通'", WEB_SOURCE)
+        self.assertIn("spoilerFree:'防剧透'", WEB_SOURCE)
+        self.assertIn("spoilerNormal:'Normal'", WEB_SOURCE)
+        self.assertIn("spoilerFree:'Spoiler-free'", WEB_SOURCE)
+        self.assertIn("任何 Kalshi 盘口消息", WEB_SOURCE)
+        self.assertIn("已确认的 ESPN 比赛事件仍会播报", WEB_SOURCE)
+        self.assertIn("all proactive Kalshi market alerts stop", WEB_SOURCE)
+        self.assertIn("probability bar and ticker keep updating", WEB_SOURCE)
+        self.assertIn("'/api/match-setup/spoiler'", WEB_SOURCE)
+        self.assertIn("typeof payload?.spoiler_free_mode !== 'boolean'", WEB_SOURCE)
+        self.assertIn("spoiler_only: true", WEB_SOURCE)
+        self.assertIn("savePreference('spoilerFreeMode', spoilerFreeMode)", WEB_SOURCE)
+        self.assertIn("readPreference('spoilerFreeMode', false)", WEB_SOURCE)
+
+    def test_spoiler_free_mode_is_relayed_and_applied_only_after_ack(self):
+        payload = WEB_SOURCE.split("function matchSetupPayload", 1)[1].split(
+            "function syncMatchSetup", 1
+        )[0]
+        queue = WEB_SOURCE.split("function queueMatchSetup", 1)[1].split(
+            "function acknowledgeMatchSetup", 1
+        )[0]
+        acknowledgement = WEB_SOURCE.split("function acknowledgeMatchSetup", 1)[1].split(
+            "// ---------------------------------------------------------------------------", 1
+        )[0]
+        page = WEB_SOURCE.split("function setupPageHtml", 1)[1].split(
+            "// ---------------------------------------------------------------------------", 1
+        )[0]
+
+        self.assertIn("spoiler_free_mode: state.matchSetup.spoilerFreeMode", payload)
+        self.assertIn("state.matchSetup.pending?.spoiler_free_mode", queue)
+        self.assertIn("!state.matchSetup.pending.spoiler_only", queue)
+        self.assertIn("spoiler_free_mode: spoilerFreeMode", queue)
+        self.assertIn("pending.spoiler_free_mode = spoilerFreeMode", queue)
+        self.assertIn("pending?.spoiler_only", acknowledgement)
+        self.assertIn("applySpoilerFreeMode(payload?.spoiler_free_mode)", acknowledgement)
+        self.assertIn("spoiler_free_mode:spoilerFreeMode", page)
+        self.assertIn("data.pending.spoiler_free_mode", page)
+        self.assertIn('input[name="spoiler_free_mode"]', page)
+
     def test_device_setup_page_offers_standalone_market_watch(self):
         self.assertIn('id="kalshiUrl"', WEB_SOURCE)
         self.assertIn('id="watchMarket"', WEB_SOURCE)
@@ -137,8 +181,46 @@ class ModLayoutTests(unittest.TestCase):
         self.assertIn("from 'matchday/http-server-safe'", WEB_SOURCE)
         self.assertIn("headers.set('content-length', this.#body.byteLength)", HTTP_SOURCE)
         self.assertIn("request.arrayBuffer().then", HTTP_SOURCE)
-        self.assertIn("connection.respondWith(response).catch", HTTP_SOURCE)
+        # respondWith rejections settle through #handle's rejection handler
+        self.assertIn("this.#handle(connection).then(finish", HTTP_SOURCE)
         self.assertIn("HTTP response closed", HTTP_SOURCE)
+
+    def test_http_service_isolates_and_bounds_each_request(self):
+        # One stalled request body or slow handler must not stop the accept
+        # loop (the pre-1.6 head-of-line blocking wedge), so the loop hands
+        # every connection off without awaiting it.
+        self.assertIn("this.#serve(connection)", HTTP_SOURCE)
+        self.assertNotIn("await handler(context)\n      if", HTTP_SOURCE)
+        # A wedged peer is reclaimed by the watchdog instead of leaking a slot.
+        self.assertIn("REQUEST_TIMEOUT_MS", HTTP_SOURCE)
+        self.assertIn("HTTP request timed out", HTTP_SOURCE)
+        # Load shedding before lwIP's pcb pool (shared with the TTS stream) runs out.
+        self.assertIn("MAX_ACTIVE_REQUESTS", HTTP_SOURCE)
+        # A listener-level failure restarts the accept loop instead of killing it.
+        self.assertIn("HTTP listener restarting", HTTP_SOURCE)
+
+    def test_http_service_uses_rejection_safe_listener(self):
+        # The vendored listener observes both connection promises at creation;
+        # upstream leaves them unobserved until respondWith, and an early peer
+        # reset then aborts the release build ("unhandled rejection" restart).
+        self.assertIn("from 'matchday/listen-safe'", HTTP_SOURCE)
+        listen_source = (ROOT / "mod" / "listen-safe.js").read_text(encoding="utf-8")
+        self.assertIn("responsePromise.then(undefined, () => {})", listen_source)
+        self.assertIn("requestPromise.then(undefined, () => {})", listen_source)
+        manifest = (ROOT / "mod" / "manifest.json").read_text(encoding="utf-8")
+        self.assertIn('"matchday/listen-safe": "./listen-safe"', manifest)
+
+    def test_tts_uses_deep_buffer_with_host_fallback(self):
+        # The host pins WavStreamer to 600ms; XS busy bursts while speaking
+        # overrun that and every overrun is an audible mid-sentence dropout.
+        self.assertIn("matchday/tts-remote-safe", AUDIO_SOURCE)
+        self.assertIn("TTS_BUFFER_MS = 1500", AUDIO_SOURCE)
+        # Stock hosts without the audio modules keep the pre-1.6 path.
+        self.assertIn("Modules.importNow('tts-remote')", AUDIO_SOURCE)
+        tts_source = (ROOT / "mod" / "tts-remote-safe.js").read_text(encoding="utf-8")
+        self.assertIn("bufferDuration: this.bufferDuration", tts_source)
+        manifest = (ROOT / "mod" / "manifest.json").read_text(encoding="utf-8")
+        self.assertIn('"matchday/tts-remote-safe": "./tts-remote-safe"', manifest)
 
 
 class MuteBossKeyTests(unittest.TestCase):

@@ -24,6 +24,7 @@ const context = vm.createContext({
     matchSetup: {
       language: 'zh',
       commentaryStyle: 'balanced',
+      spoilerFreeMode: false,
       options: [{
         event_id: '760511',
         kalshi_event_ticker: 'KXWCADVANCE-26JUL10ESPBEL',
@@ -107,11 +108,81 @@ assert.equal(styleAcknowledged.ok, true)
 assert.equal(context.state.matchSetup.commentaryStyle, 'casual')
 assert.equal(context.state.matchSetup.lastResult.style_only, true)
 
+assert.equal(context.queueSpoilerFreeMode({ spoiler_free_mode: 'true' }).status, 400)
+const queuedSpoiler = context.queueSpoilerFreeMode({
+  request_id: 'spoiler-1',
+  spoiler_free_mode: true,
+})
+assert.equal(queuedSpoiler.ok, true)
+assert.equal(context.state.matchSetup.spoilerFreeMode, false)
+assert.equal(context.state.matchSetup.pending.spoiler_only, true)
+assert.equal(context.state.matchSetup.pending.spoiler_free_mode, true)
+
+// A user can toggle spoiler protection and immediately submit the fixture.
+// The full request must absorb the pending choice instead of reverting it.
+const queuedSpoilerMatch = context.queueMatchSetup({
+  request_id: 'match-2',
+  event_ticker: 'KXWCADVANCE-26JUL10ESPBEL',
+  espn_event_id: '760511',
+  favorite_team: 'Belgium',
+  position_team: 'Belgium',
+  language: 'zh',
+})
+assert.equal(queuedSpoilerMatch.ok, true)
+assert.equal(context.state.matchSetup.spoilerFreeMode, false)
+assert.equal(context.state.matchSetup.pending.request_id, 'match-2')
+assert.equal(context.state.matchSetup.pending.spoiler_free_mode, true)
+
+const spoilerMatchAcknowledged = context.acknowledgeMatchSetup({
+  request_id: 'match-2',
+  ok: true,
+  language: 'zh',
+  commentary_style: 'casual',
+  spoiler_free_mode: true,
+})
+assert.equal(spoilerMatchAcknowledged.ok, true)
+assert.equal(context.state.matchSetup.spoilerFreeMode, true)
+assert.equal(preferences.get('spoilerFreeMode'), true)
+
+const queuedSpoilerOff = context.queueSpoilerFreeMode({
+  request_id: 'spoiler-2',
+  spoiler_free_mode: false,
+})
+assert.equal(queuedSpoilerOff.ok, true)
+assert.equal(context.state.matchSetup.spoilerFreeMode, true)
+assert.equal(context.queueCommentaryStyle({ commentary_style: 'balanced' }).status, 409)
+const spoilerAcknowledged = context.acknowledgeMatchSetup({
+  request_id: 'spoiler-2',
+  ok: true,
+  spoiler_free_mode: false,
+})
+assert.equal(spoilerAcknowledged.ok, true)
+assert.equal(context.state.matchSetup.spoilerFreeMode, false)
+assert.equal(context.state.matchSetup.lastResult.spoiler_only, true)
+
+const queuedStandalone = context.queueMatchSetup({
+  request_id: 'market-1',
+  standalone: true,
+  kalshi_url: 'KXWCADVANCE-26JUL10ESPBEL',
+  language: 'en',
+  commentary_style: 'professional',
+  spoiler_free_mode: true,
+})
+assert.equal(queuedStandalone.ok, true)
+assert.equal(context.state.matchSetup.pending.spoiler_free_mode, true)
+assert.equal(context.acknowledgeMatchSetup({
+  request_id: 'market-1',
+  ok: true,
+  spoiler_free_mode: true,
+}).ok, true)
+assert.equal(context.state.matchSetup.spoilerFreeMode, true)
+
 context.state.matchSetup.current = { label: 'keep me' }
 const optionCount = context.state.matchSetup.options.length
-context.syncMatchSetup({ commentary_style: 'professional' })
+context.syncMatchSetup({ commentary_style: 'professional', spoiler_free_mode: false })
 assert.equal(context.state.matchSetup.commentaryStyle, 'professional')
+assert.equal(context.state.matchSetup.spoilerFreeMode, false)
 assert.equal(context.state.matchSetup.options.length, optionCount)
 assert.equal(context.state.matchSetup.current.label, 'keep me')
 
-console.log('ok mod match-setup style relay behavior')
+console.log('ok mod match-setup preference relay behavior')

@@ -6,7 +6,9 @@ import threading
 import time
 import unittest
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import stackchan_match_setup as setup
@@ -144,6 +146,7 @@ class MatchSetupTests(unittest.TestCase):
                             "position_team": "",
                             "language": "en",
                             "commentary_style": "professional",
+                            "spoiler_free_mode": True,
                         }
                     )
             updated = json.loads(path.read_text(encoding="utf-8"))
@@ -152,6 +155,7 @@ class MatchSetupTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["language"], "en")
         self.assertEqual(result["commentary_style"], "professional")
+        self.assertTrue(result["spoiler_free_mode"])
         self.assertEqual(result["label"], "Spain vs Belgium")
         self.assertEqual(updated["language"], "en")
         self.assertEqual(updated["espn"]["event_id"], "760511")
@@ -159,6 +163,7 @@ class MatchSetupTests(unittest.TestCase):
         self.assertEqual(updated["espn"]["favorite_team"], "Spain")
         self.assertEqual(updated["espn"]["position_team"], "")
         self.assertEqual(updated["espn"]["commentary_style"], "professional")
+        self.assertTrue(updated["spoiler_free_mode"])
         self.assertEqual(
             updated["espn"]["label"],
             {"zh": "西班牙 vs 比利时", "en": "Spain vs Belgium"},
@@ -174,9 +179,20 @@ class MatchSetupTests(unittest.TestCase):
             updated["markets"][0]["label"],
             {"zh": "西班牙晋级", "en": "Spain to advance"},
         )
-        self.assertIn("西班牙", updated["markets"][0]["goal_signal_up_speech"]["zh"])
-        self.assertIn("Spain", updated["markets"][0]["goal_signal_up_speech"]["en"])
-        self.assertIn("Belgium", updated["markets"][0]["goal_signal_down_speech"]["en"])
+        self.assertEqual(
+            updated["markets"][0]["goal_signal_up_speech"]["zh"],
+            "盘口突然拉升！西班牙这边很可能进球了！先别眨眼，等文字直播确认！",
+        )
+        self.assertEqual(
+            updated["markets"][0]["goal_signal_up_speech"]["en"],
+            "The market just jumped! Spain may have scored. "
+            "Don't blink—waiting for commentary confirmation!",
+        )
+        self.assertEqual(
+            updated["markets"][0]["goal_signal_down_speech"]["en"],
+            "The market just dropped! Belgium may have scored. "
+            "Don't blink—waiting for commentary confirmation!",
+        )
         self.assertEqual(
             updated["markets"][0]["goal_signal_up_team"],
             {"zh": "西班牙", "en": "Spain"},
@@ -191,6 +207,7 @@ class MatchSetupTests(unittest.TestCase):
         self.assertEqual(english_status["favorite_team"], "Spain")
         self.assertEqual(english_status["language"], "en")
         self.assertEqual(english_status["commentary_style"], "professional")
+        self.assertTrue(english_status["spoiler_free_mode"])
         self.assertTrue(instance.take_reload_requested())
 
     def test_apply_rejects_unsupported_language_before_fetching(self):
@@ -201,6 +218,7 @@ class MatchSetupTests(unittest.TestCase):
 
     def test_apply_enables_position_team_market_and_goal_signal_direction(self):
         initial = {
+            "spoiler_free_mode": True,
             "probability_bar": {},
             "espn": {"team_names": {}, "team_colors": {}},
             "setup_server": {},
@@ -230,7 +248,7 @@ class MatchSetupTests(unittest.TestCase):
                 return_value=setup.event_markets(KALSHI_EVENT),
             ):
                 with patch.object(instance, "_espn_match", return_value=match):
-                    instance.apply_selection(
+                    result = instance.apply_selection(
                         {
                             "event_ticker": "KXWCADVANCE-26JUL10ESPBEL",
                             "espn_event_id": "760511",
@@ -242,6 +260,8 @@ class MatchSetupTests(unittest.TestCase):
             updated = json.loads(path.read_text(encoding="utf-8"))
 
         spain_market, belgium_market = updated["markets"]
+        self.assertTrue(result["spoiler_free_mode"])
+        self.assertTrue(updated["spoiler_free_mode"])
         self.assertFalse(spain_market["alerts_enabled"])
         self.assertFalse(spain_market["show_in_ticker"])
         self.assertFalse(spain_market["tracks_position"])
@@ -262,8 +282,14 @@ class MatchSetupTests(unittest.TestCase):
             belgium_market["goal_signal_down_team"],
             {"zh": "西班牙", "en": "Spain"},
         )
-        self.assertIn("比利时", belgium_market["goal_signal_up_speech"]["zh"])
-        self.assertIn("西班牙", belgium_market["goal_signal_down_speech"]["zh"])
+        self.assertEqual(
+            belgium_market["goal_signal_up_speech"]["zh"],
+            "盘口突然拉升！比利时这边很可能进球了！先别眨眼，等文字直播确认！",
+        )
+        self.assertEqual(
+            belgium_market["goal_signal_down_speech"]["zh"],
+            "盘口突然跳水！西班牙这边很可能进球了！先别眨眼，等文字直播确认！",
+        )
 
     def test_apply_canonicalizes_kalshi_team_aliases_to_espn_names(self):
         initial = {
@@ -340,7 +366,100 @@ class MatchSetupTests(unittest.TestCase):
         self.assertIn('id="style-effective"', page)
         self.assertIn("showEffectiveStyle(style)", page)
         self.assertIn("/api/setup/style", page)
+        self.assertIn('name="spoiler_free_mode"', page)
+        self.assertIn('id="spoiler-effective"', page)
+        self.assertIn("所有 Kalshi 盘口主动消息", page)
+        self.assertIn("ESPN 已确认事件照常播报", page)
+        self.assertIn("概率条与 ticker 仍会更新", page)
+        self.assertIn("/api/setup/spoiler", page)
+        self.assertIn("spoiler_free_mode:selectedSpoilerFreeMode()", page)
         self.assertIn('id="apply"', page)
+
+    def test_status_defaults_spoiler_free_mode_to_false(self):
+        initial = {"espn": {}, "markets": [{"ticker": "TEST", "label": "test"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+
+            status = instance.current_status()
+
+        self.assertFalse(status["spoiler_free_mode"])
+
+    def test_spoiler_only_update_persists_and_is_consumed_once(self):
+        initial = {
+            "spoiler_free_mode": False,
+            "espn": {"commentary_style": "balanced", "event_id": "keep-me"},
+            "runtime_sentinel": {"queue": ["untouched"]},
+            "markets": [{"ticker": "TEST", "label": "测试"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+
+            enabled = instance.apply_spoiler_free_mode({"spoiler_free_mode": True})
+            self.assertFalse(instance.take_reload_requested())
+            self.assertIs(instance.take_spoiler_free_mode_update(), True)
+            self.assertIsNone(instance.take_spoiler_free_mode_update())
+
+            disabled = instance.apply_spoiler_free_mode({"spoiler_free_mode": False})
+            updated = json.loads(path.read_text(encoding="utf-8"))
+            self.assertFalse(instance.take_reload_requested())
+            self.assertIs(instance.take_spoiler_free_mode_update(), False)
+            self.assertIsNone(instance.take_spoiler_free_mode_update())
+
+        self.assertEqual(enabled, {"ok": True, "spoiler_free_mode": True})
+        self.assertEqual(disabled, {"ok": True, "spoiler_free_mode": False})
+        self.assertFalse(updated["spoiler_free_mode"])
+        self.assertEqual(updated["espn"]["event_id"], "keep-me")
+        self.assertEqual(updated["runtime_sentinel"], {"queue": ["untouched"]})
+
+    def test_spoiler_only_update_rejects_missing_or_non_boolean_value(self):
+        initial = {"espn": {}, "markets": [{"ticker": "TEST", "label": "test"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+
+            with self.assertRaisesRegex(ValueError, "spoiler_free_mode is required"):
+                instance.apply_spoiler_free_mode({})
+            for invalid in (None, "true", 1, 0, [], {}):
+                with self.subTest(invalid=invalid):
+                    with self.assertRaisesRegex(ValueError, "must be a JSON boolean"):
+                        instance.apply_spoiler_free_mode(
+                            {"spoiler_free_mode": invalid}
+                        )
+
+    def test_full_apply_paths_reject_non_boolean_spoiler_value_before_fetching(self):
+        instance = service(Path("unused.json"))
+
+        for apply in (instance.apply_selection, instance.apply_market_selection):
+            with self.subTest(apply=apply.__name__):
+                with self.assertRaisesRegex(ValueError, "must be a JSON boolean"):
+                    apply({"spoiler_free_mode": "true"})
+
+    def test_spoiler_endpoint_accepts_json_boolean(self):
+        initial = {"espn": {}, "markets": [{"ticker": "TEST", "label": "test"}]}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+            body = json.dumps({"spoiler_free_mode": True}).encode("utf-8")
+            handler = object.__new__(setup.SetupRequestHandler)
+            handler.path = "/api/setup/spoiler"
+            handler.headers = {"Content-Length": str(len(body))}
+            handler.rfile = BytesIO(body)
+            handler.server = SimpleNamespace(service=instance)
+            responses = []
+            handler._json = lambda payload, status=200: responses.append((status, payload))
+
+            handler.do_POST()
+
+        self.assertEqual(
+            responses,
+            [(200, {"ok": True, "spoiler_free_mode": True})],
+        )
 
     def test_style_only_update_persists_without_requesting_full_reload(self):
         initial = {
@@ -440,6 +559,7 @@ KALSHI_GENERAL_EVENT = {
 class StandaloneMarketTests(unittest.TestCase):
     def test_apply_market_selection_configures_ticker_only_watch(self):
         initial = {
+            "spoiler_free_mode": True,
             "ticker_enabled": False,
             "probability_bar": {"enabled": True, "market_ticker": "OLD"},
             "espn": {
@@ -480,6 +600,7 @@ class StandaloneMarketTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["label"], "Presidential winner")
         self.assertEqual(result["language"], "en")
+        self.assertTrue(result["spoiler_free_mode"])
         self.assertEqual(result["event_id"], "")
         # Top four markets by traded volume, most active first.
         self.assertEqual(
@@ -505,7 +626,35 @@ class StandaloneMarketTests(unittest.TestCase):
         )
         self.assertFalse(any(market["tracks_position"] for market in updated["markets"]))
         self.assertEqual(updated["language"], "en")
+        self.assertTrue(updated["spoiler_free_mode"])
         self.assertEqual(updated["setup_server"]["last_event_ticker"], "KXPRES-28")
+
+    def test_apply_market_selection_accepts_explicit_spoiler_setting(self):
+        initial = {
+            "spoiler_free_mode": True,
+            "espn": {},
+            "setup_server": {},
+            "markets": [{"ticker": "OLD", "label": "old"}],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "watch.json"
+            path.write_text(json.dumps(initial), encoding="utf-8")
+            instance = service(path)
+            with patch.object(
+                instance,
+                "_kalshi_event_any",
+                return_value=setup.general_event_markets(KALSHI_GENERAL_EVENT),
+            ):
+                result = instance.apply_market_selection(
+                    {
+                        "kalshi_url": "KXPRES-28",
+                        "spoiler_free_mode": False,
+                    }
+                )
+            updated = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertFalse(result["spoiler_free_mode"])
+        self.assertFalse(updated["spoiler_free_mode"])
 
     def test_apply_market_selection_rejects_unrecognizable_input(self):
         instance = service(Path("unused.json"))

@@ -8,11 +8,11 @@ building the Matchday mod, starting the watcher, and optionally enabling LAN
 speech.
 
 Already running Matchday? Read the version-specific
-[1.5.0](releases/1.5.0.md) and [1.4.0](releases/1.4.0.md) notes before rebuilding.
-Support/position-aware wording, position-based market selection, and the global
-player catalog are watcher-only updates. An installed 1.5.0 mod can stay in
-place: deploy the watcher code and `config/espn_player_catalog.json`, then
-restart the watcher process.
+[1.6.0](releases/1.6.0.md), [1.5.0](releases/1.5.0.md), and
+[1.4.0](releases/1.4.0.md) notes before rebuilding. Spoiler protection on the
+device phone page requires both the 1.6.0 watcher and mod, but not a host
+reflash. The 1.5.0 support/position wording and global player catalog remain
+watcher-only updates.
 
 ## Requirements
 

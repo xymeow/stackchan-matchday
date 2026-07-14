@@ -93,7 +93,13 @@ DEFAULT_COMMENTARY_STYLE = "balanced"
 COMMENTARY_STYLES = frozenset({"casual", "balanced", "professional"})
 REQUEST_TIMEOUT_SECONDS = 12
 STACKCHAN_COMMAND_TIMEOUT_SECONDS = 20
-MATCH_SETUP_PENDING_POLL_SECONDS = 2.5
+STACKCHAN_SPEECH_TIMEOUT_SECONDS = 45
+STACKCHAN_FEEDBACK_POLL_SECONDS = 1.0
+# Every poll is a fresh TCP connection to the device. Connection churn is the
+# trigger for a use-after-free race in the Moddable lwIP socket glue
+# (tcpReceive on the tcpip thread vs. close on the XS thread), so poll no
+# faster than the setup-page UX truly needs.
+MATCH_SETUP_PENDING_POLL_SECONDS = 5.0
 MAX_QUEUED_ALERTS = 24
 # A failed delivery must never retry immediately: rapid resends pile balloon
 # redraws and audio setups onto the device (the tone fallback of each retry
@@ -241,6 +247,7 @@ class WatchConfig:
     ticker_enabled: bool = True
     display_refresh_seconds: int = DEFAULT_DISPLAY_REFRESH_SECONDS
     alert_balloon_seconds: int = DEFAULT_ALERT_BALLOON_SECONDS
+    spoiler_free_mode: bool = False
     quiet_hours: QuietHours = field(default_factory=QuietHours)
     probability_bar: ProbabilityBarConfig = field(default_factory=ProbabilityBarConfig)
     setup_server: SetupServerConfig = field(default_factory=SetupServerConfig)
@@ -333,6 +340,7 @@ class Alert:
     source_event_at: datetime | None = None
     setup_url: str | None = None
     is_final: bool = False
+    spoiler_sensitive: bool = False
 
 
 @dataclass
@@ -480,6 +488,20 @@ def apply_live_commentary_style(config: WatchConfig, value: Any) -> str:
     for market in config.markets:
         market.commentary_style = style
     return style
+
+
+def normalize_spoiler_free_mode(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError("spoiler_free_mode must be a boolean")
+    return value
+
+
+def apply_live_spoiler_free_mode(config: WatchConfig, value: Any) -> bool:
+    """Hot-apply only the anti-spoiler preference on the live config object."""
+
+    enabled = normalize_spoiler_free_mode(value)
+    config.spoiler_free_mode = enabled
+    return enabled
 
 
 def _config_text(value: Any, language: str, *, path: str, fallback: str = "") -> str:
@@ -762,6 +784,9 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         ),
         alert_balloon_seconds=max(
             1, min(30, int(raw.get("alert_balloon_seconds", DEFAULT_ALERT_BALLOON_SECONDS)))
+        ),
+        spoiler_free_mode=normalize_spoiler_free_mode(
+            raw.get("spoiler_free_mode", False)
         ),
         quiet_hours=quiet,
         probability_bar=probability_bar,
@@ -4008,25 +4033,46 @@ def speech_for_market_goal_signal(
             else:
                 note = ""
         else:
-            if support_known and position_known:
-                if support_good == position_good:
-                    note = (
-                        "如果属实，支持的球队和仓位都会受益"
-                        if support_good
-                        else "如果属实，支持的球队和仓位都会受损"
-                    )
+            if style == "casual":
+                if support_known and position_known:
+                    if support_good == position_good:
+                        note = (
+                            "要是真的，咱们支持的球队和仓位都舒服了"
+                            if support_good
+                            else "要是真的，支持的球队和仓位可都难受了"
+                        )
+                    else:
+                        note = (
+                            "要是真的，球迷开心，仓位可要承压"
+                            if support_good
+                            else "要是真的，心里难受，不过仓位倒是受益"
+                        )
+                elif support_known:
+                    note = "要是真的，咱们支持的球队就舒服了" if support_good else "要是真的，支持方可不好受"
+                elif position_known:
+                    note = "要是真的，这波对仓位有利" if position_good else "要是真的，这波仓位要承压"
                 else:
-                    note = (
-                        "如果属实，球迷这边开心，仓位却会承压"
-                        if support_good
-                        else "如果属实，感情上不好受，不过仓位会受益"
-                    )
-            elif support_known:
-                note = "如果属实，这是支持方的好消息" if support_good else "如果属实，这对支持方不利"
-            elif position_known:
-                note = "如果属实，当前仓位会受益" if position_good else "如果属实，当前仓位会承压"
+                    note = ""
             else:
-                note = ""
+                if support_known and position_known:
+                    if support_good == position_good:
+                        note = (
+                            "如果属实，支持的球队和仓位都会受益"
+                            if support_good
+                            else "如果属实，支持的球队和仓位都会受损"
+                        )
+                    else:
+                        note = (
+                            "如果属实，球迷这边开心，仓位却会承压"
+                            if support_good
+                            else "如果属实，感情上不好受，不过仓位会受益"
+                        )
+                elif support_known:
+                    note = "如果属实，这是支持方的好消息" if support_good else "如果属实，这对支持方不利"
+                elif position_known:
+                    note = "如果属实，当前仓位会受益" if position_good else "如果属实，当前仓位会承压"
+                else:
+                    note = ""
         return join_sentences(config.language, speech, note) if note else speech
 
     def ensure_uncertainty(speech: str) -> str:
@@ -4085,7 +4131,10 @@ def speech_for_market_goal_signal(
                 and "确认" in speech
                 and ("等" in speech or "待" in speech)
             )
-            safe = f"盘口突变，{goal_team}疑似进球，等待文字直播确认。"
+            safe = (
+                f"盘口突然{'拉升' if rising else '跳水'}！"
+                f"{goal_team}这边很可能进球了！先等文字直播确认。"
+            )
             confirmation_suffix = "仍需等待文字直播确认。"
         if not uncertain or has_unqualified_claim():
             return add_view_context(safe)
@@ -4115,19 +4164,19 @@ def speech_for_market_goal_signal(
         )
     if style == "casual":
         return add_view_context(
-            f"先别急，{snapshot.label}盘口突然{'拉升' if rising else '跳水'}{abs(rapid_delta)}分，"
-            f"来到{mid}分。{goal_team}进球的可能性更大，不过目前还只是疑似，"
-            "要等文字直播确认。"
+            f"盘口突然{'拉升' if rising else '跳水'}！"
+            f"{goal_team}这边很可能进球了！"
+            "先别眨眼，等文字直播确认！"
         )
     if style == "professional":
         return add_view_context(
-            f"{snapshot.label}盘口快速{'上行' if rising else '下挫'}{abs(rapid_delta)}分至{mid}分。"
-            f"{goal_team}进球的可能性上升，但目前仍属疑似，"
-            "等待文字直播确认。"
+            f"盘口快速{'上行' if rising else '下挫'}！{snapshot.label}在短时间内"
+            f"变动{abs(rapid_delta)}分至{mid}分，{goal_team}进球概率骤升，"
+            "但目前仍是疑似。等待文字直播确认！"
         )
     return add_view_context(
-        f"盘口突然{'拉升' if rising else '跳水'}，"
-        f"{goal_team}疑似进球，等待文字直播确认。"
+        f"盘口突然{'拉升' if rising else '跳水'}！"
+        f"{goal_team}这边很可能进球了！先等文字直播确认。"
     )
 
 
@@ -4170,6 +4219,7 @@ def evaluate_market(
                     f"{snapshot.label} status changed to {snapshot.status}.",
                 ),
                 detail=f"status {state.last_status} -> {snapshot.status}",
+                spoiler_sensitive=True,
             )
         )
 
@@ -4195,6 +4245,7 @@ def evaluate_market(
                         f"{snapshot.label} closes in about {english_quantity(minutes_left, 'minute')}.",
                     ),
                     detail=f"close_time={snapshot.close_time.isoformat()}",
+                    spoiler_sensitive=True,
                 )
             )
             state.near_close_alerted = True
@@ -4226,6 +4277,7 @@ def evaluate_market(
                         f"{snapshot.label} YES spread {word} to {english_quantity(current_spread, 'cent')}.",
                     ),
                     detail=f"yes_spread {previous_spread}c -> {current_spread}c",
+                    spoiler_sensitive=True,
                 )
             )
 
@@ -4276,6 +4328,7 @@ def evaluate_market(
                     ),
                     clip_id="odds-up" if rising else "odds-down",
                     prefer_dynamic_voice=True,
+                    spoiler_sensitive=True,
                 )
             )
             state.last_goal_signal_at = now_ts
@@ -4309,6 +4362,7 @@ def evaluate_market(
                         speech=speech,
                         detail=f"{side_text(config.side_i_care)} mid {baseline}c -> {mid}c",
                         clip_id=clip_id,
+                        spoiler_sensitive=True,
                     )
                 )
 
@@ -4316,6 +4370,65 @@ def evaluate_market(
     state.last_yes_spread_cents = current_spread
     state.last_status = snapshot.status
     return alerts
+
+
+def apply_spoiler_policy_to_market_alerts(
+    enabled: bool,
+    alerts: list[Alert],
+    snapshot: MarketSnapshot,
+    market: MarketConfig,
+    state: MarketState,
+    now: datetime,
+) -> list[Alert]:
+    """Consume hidden market moves while retaining non-spoiler market events.
+
+    The alert baseline follows every protected poll, not merely moves large
+    enough to raise an alert. Turning protection off therefore starts from the
+    latest visible market state instead of replaying an accumulated move.
+    """
+
+    if not enabled:
+        return alerts
+    sensitive_alerts = [alert for alert in alerts if alert.spoiler_sensitive]
+    mid = snapshot.implied_probability(market.side_i_care)
+    if mid is not None:
+        state.last_alert_mid_cents = mid
+    if sensitive_alerts:
+        state.last_alert_at = now.timestamp()
+    return [alert for alert in alerts if not alert.spoiler_sensitive]
+
+
+def consume_spoiler_market_baselines(
+    config: WatchConfig,
+    snapshots: dict[str, MarketSnapshot],
+    states: dict[str, MarketState],
+    now: datetime,
+) -> None:
+    """Consume the latest passive market state when protection is enabled.
+
+    This closes the small toggle-between-polls window: a queued move must not
+    become a fresh catch-up alert if protection is enabled and then disabled
+    before the next Kalshi response arrives.
+    """
+
+    for market in config.markets:
+        snapshot = snapshots.get(market.ticker)
+        state = states.get(market.ticker)
+        if snapshot is None or state is None:
+            continue
+        mid = snapshot.implied_probability(market.side_i_care)
+        if mid is not None:
+            state.last_alert_mid_cents = mid
+            state.last_observed_mid_cents = mid
+        state.last_yes_spread_cents = snapshot.yes_spread()
+        state.last_status = snapshot.status
+        if (
+            snapshot.status.lower() not in CLOSED_STATUSES
+            and snapshot.close_time is not None
+            and 0 < (snapshot.close_time - now).total_seconds()
+            <= market.near_close_minutes * 60
+        ):
+            state.near_close_alerted = True
 
 
 def mark_alert_sent(alert: Alert, snapshot: MarketSnapshot, config: MarketConfig, state: MarketState, now: datetime) -> None:
@@ -4392,6 +4505,12 @@ def merge_alert_queue(
         key=lambda item: (-item.alert.priority, item.queued_at),
     )
     return queued[:MAX_QUEUED_ALERTS]
+
+
+def purge_spoiler_sensitive_alerts(queue: list[QueuedAlert]) -> list[QueuedAlert]:
+    """Drop protected alerts that have not started delivery yet."""
+
+    return [item for item in queue if not item.alert.spoiler_sensitive]
 
 
 def _version_tuple(value: str) -> tuple[int, int, int]:
@@ -4613,8 +4732,13 @@ def setup_confirmation_alert(config: WatchConfig) -> Alert:
 def post_stackchan_http_command(host: str, command: str) -> None:
     url = f"http://{host}/api/command"
     req = urllib.request.Request(url, data=command.encode("utf-8"), method="POST")
+    timeout = (
+        STACKCHAN_SPEECH_TIMEOUT_SECONDS
+        if command.lstrip().lower().startswith("say ")
+        else STACKCHAN_COMMAND_TIMEOUT_SECONDS
+    )
     with STACKCHAN_DEVICE_HTTP_LOCK:
-        with urllib.request.urlopen(req, timeout=STACKCHAN_COMMAND_TIMEOUT_SECONDS) as res:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
             res.read()
 
 
@@ -4654,6 +4778,9 @@ def sync_device_match_setup(
             "commentary_style": str(
                 current.get("commentary_style") or config.espn.commentary_style
             ),
+            "spoiler_free_mode": normalize_spoiler_free_mode(
+                current.get("spoiler_free_mode", config.spoiler_free_mode)
+            ),
             "options": options,
             "current": current,
         },
@@ -4669,6 +4796,22 @@ def sync_device_commentary_style(config: WatchConfig, style: str) -> bool:
         post_json(
             f"http://{config.stackchan_host}/api/match-setup/options",
             {"commentary_style": normalize_commentary_style(style)},
+            timeout=2,
+        )
+        return True
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return False
+
+
+def sync_device_spoiler_free_mode(config: WatchConfig, enabled: Any) -> bool:
+    """Best-effort anti-spoiler sync without replacing match setup options."""
+
+    if config.stackchan_transport != "http":
+        return True
+    try:
+        post_json(
+            f"http://{config.stackchan_host}/api/match-setup/spoiler",
+            {"spoiler_free_mode": normalize_spoiler_free_mode(enabled)},
             timeout=2,
         )
         return True
@@ -4771,14 +4914,20 @@ def wait_for_stackchan_feedback_idle(
                     file=sys.stderr,
                 )
             return True
-        time.sleep(0.25)
+        time.sleep(STACKCHAN_FEEDBACK_POLL_SECONDS)
     print(f"warning: Stack-chan feedback still busy after {timeout:g}s", file=sys.stderr)
     return False
 
 
 def send_alert(config: WatchConfig, alert: Alert, quiet: bool, dry_run: bool, no_say: bool) -> bool:
+    # Defense in depth for alerts queued before a live preference change. The
+    # watcher also purges them eagerly, but the delivery boundary must never
+    # emit protected market information while the mode is active.
+    if config.spoiler_free_mode and alert.spoiler_sensitive:
+        return True
     timeout_ms = config.alert_balloon_seconds * 1000
     commands = [f"face {alert.face}"]
+    deferred_stackchan_speech = ""
     if alert.setup_url and config.setup_qr_commands:
         commands.append(f"setup show {alert.setup_url}")
     else:
@@ -4809,15 +4958,15 @@ def send_alert(config: WatchConfig, alert: Alert, quiet: bool, dry_run: bool, no
     )
     if use_goal_celebration:
         red, green, blue = alert.light_rgb or (255, 255, 255)
+        commands.append(f"celebrate goal {red} {green} {blue}")
         if use_dynamic_voice:
-            commands.append(f"celebrate say {red} {green} {blue} {alert.speech}")
-        else:
-            commands.append(f"celebrate goal {red} {green} {blue}")
+            deferred_stackchan_speech = alert.speech or ""
     elif use_result_celebration:
         red, green, blue = alert.light_rgb or (255, 255, 255)
         outcome = alert.celebration.removeprefix("result-")
-        speech = f" {alert.speech}" if alert.speech and config.result_speech_commands else ""
-        commands.append(f"celebrate result {outcome} {red} {green} {blue}{speech}")
+        commands.append(f"celebrate result {outcome} {red} {green} {blue}")
+        if alert.speech and config.result_speech_commands:
+            deferred_stackchan_speech = alert.speech
     elif alert.light_rgb:
         red, green, blue = alert.light_rgb
         commands.append(f"light flash {red} {green} {blue} 1800 110")
@@ -4844,14 +4993,28 @@ def send_alert(config: WatchConfig, alert: Alert, quiet: bool, dry_run: bool, no
     except (urllib.error.URLError, OSError, RuntimeError) as error:
         print(f"warning: stackchan commands failed: {error}", file=sys.stderr)
         return False
+    celebration_settled = True
     if uses_celebration and not dry_run:
-        # The MOD acknowledges celebration commands before their asynchronous
-        # motion/TTS finishes; serialize subsequent alerts against real state.
-        wait_for_stackchan_feedback_idle(
+        # Keep LAN TTS out of the MOD's asynchronous celebration window. The
+        # local fanfare and head motion finish first; the blocking `say` request
+        # below then owns the only active watcher/device HTTP exchange while
+        # the WAV stream is open.
+        celebration_settled = wait_for_stackchan_feedback_idle(
             config,
-            include_light=True,
+            include_light=not bool(deferred_stackchan_speech),
             report_last_error=True,
         )
+    if deferred_stackchan_speech and (dry_run or celebration_settled):
+        try:
+            send_stackchan_commands(
+                config,
+                [f"say {deferred_stackchan_speech}"],
+                dry_run=dry_run,
+            )
+        except (urllib.error.URLError, OSError, RuntimeError) as error:
+            # The balloon, fanfare, and motion were already delivered. Do not
+            # retry the full goal/result and replay it just because TTS failed.
+            print(f"warning: deferred Stack-chan speech failed: {error}", file=sys.stderr)
     if alert.speech and should_play_voice:
         speak_text(config, alert.speech, dry_run=dry_run)
     return True
@@ -4956,7 +5119,7 @@ def send_summary(
     speech = join_sentences(config.language, *items)
     try:
         send_ticker(config, snapshots, dry_run=dry_run)
-        if not no_say and not quiet and speech:
+        if not config.spoiler_free_mode and not no_say and not quiet and speech:
             speak_text(config, speech, dry_run=dry_run)
     except (urllib.error.URLError, OSError, RuntimeError) as error:
         print(f"warning: stackchan summary failed: {error}", file=sys.stderr)
@@ -5074,6 +5237,8 @@ def run_watch(args: argparse.Namespace) -> int:
     setup_acknowledgements: dict[str, dict[str, Any]] = {}
     pending_device_style_sync: str | None = None
     next_device_style_sync_at = 0.0
+    pending_device_spoiler_sync: bool | None = None
+    next_device_spoiler_sync_at = 0.0
     delivery_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stackchan-delivery")
     delivery_future: Future[bool] | None = None
     delivery_item: QueuedAlert | None = None
@@ -5102,6 +5267,29 @@ def run_watch(args: argparse.Namespace) -> int:
                         f"commentary style applied: {commentary_style_update}",
                         flush=True,
                     )
+                spoiler_free_mode_update = setup_service.take_spoiler_free_mode_update()
+                if spoiler_free_mode_update is not None:
+                    enabled = apply_live_spoiler_free_mode(
+                        config,
+                        spoiler_free_mode_update,
+                    )
+                    if enabled:
+                        consume_spoiler_market_baselines(
+                            config,
+                            snapshots,
+                            states,
+                            now,
+                        )
+                        alert_queue = purge_spoiler_sensitive_alerts(alert_queue)
+                    pending_device_spoiler_sync = enabled
+                    if sync_device_spoiler_free_mode(config, enabled):
+                        pending_device_spoiler_sync = None
+                    else:
+                        next_device_spoiler_sync_at = cycle_monotonic + 5
+                    print(
+                        f"spoiler-free mode applied: {str(enabled).lower()}",
+                        flush=True,
+                    )
 
             if (
                 pending_device_style_sync
@@ -5111,6 +5299,15 @@ def run_watch(args: argparse.Namespace) -> int:
                     pending_device_style_sync = None
                 else:
                     next_device_style_sync_at = cycle_monotonic + 5
+
+            if (
+                pending_device_spoiler_sync is not None
+                and cycle_monotonic >= next_device_spoiler_sync_at
+            ):
+                if sync_device_spoiler_free_mode(config, pending_device_spoiler_sync):
+                    pending_device_spoiler_sync = None
+                else:
+                    next_device_spoiler_sync_at = cycle_monotonic + 5
 
             if setup_service and setup_service.take_reload_requested():
                 previous_dynamic_voice = config.dynamic_voice_commands
@@ -5139,6 +5336,7 @@ def run_watch(args: argparse.Namespace) -> int:
                 next_schedule_refresh_at = 0.0
                 next_setup_pending_poll_at = 0.0
                 pending_device_style_sync = None
+                pending_device_spoiler_sync = None
                 last_poll_tier = ""
                 quiet = in_quiet_hours(config.quiet_hours)
                 try:
@@ -5215,11 +5413,25 @@ def run_watch(args: argparse.Namespace) -> int:
                     setup_request = fetch_device_match_setup_pending(config)
                     if setup_request:
                         request_id = str(setup_request.get("request_id") or "")
+                        has_match_selection = any(
+                            setup_request.get(key)
+                            for key in (
+                                "kalshi_url",
+                                "event_ticker",
+                                "espn_event_id",
+                            )
+                        )
+                        spoiler_only_request = bool(
+                            setup_request.get("spoiler_only")
+                        ) or (
+                            "spoiler_free_mode" in setup_request
+                            and not has_match_selection
+                            and "commentary_style" not in setup_request
+                        )
                         style_only_request = bool(setup_request.get("style_only")) or (
-                            bool(setup_request.get("commentary_style"))
-                            and not setup_request.get("kalshi_url")
-                            and not setup_request.get("event_ticker")
-                            and not setup_request.get("espn_event_id")
+                            "commentary_style" in setup_request
+                            and not has_match_selection
+                            and "spoiler_free_mode" not in setup_request
                         )
                         acknowledgement = setup_acknowledgements.get(request_id)
                         if acknowledgement is None:
@@ -5228,7 +5440,29 @@ def run_watch(args: argparse.Namespace) -> int:
                                     bool(setup_request.get("kalshi_url"))
                                     and not setup_request.get("espn_event_id")
                                 )
-                                if style_only_request:
+                                if spoiler_only_request:
+                                    result = setup_service.apply_spoiler_free_mode(
+                                        setup_request
+                                    )
+                                    enabled = apply_live_spoiler_free_mode(
+                                        config,
+                                        result["spoiler_free_mode"],
+                                    )
+                                    if enabled:
+                                        consume_spoiler_market_baselines(
+                                            config,
+                                            snapshots,
+                                            states,
+                                            now,
+                                        )
+                                        alert_queue = purge_spoiler_sensitive_alerts(
+                                            alert_queue
+                                        )
+                                    # The device already holds this value; consume
+                                    # the local service notification without
+                                    # echoing it back through the relay.
+                                    setup_service.take_spoiler_free_mode_update()
+                                elif style_only_request:
                                     result = setup_service.apply_commentary_style(setup_request)
                                     apply_live_commentary_style(
                                         config,
@@ -5242,11 +5476,36 @@ def run_watch(args: argparse.Namespace) -> int:
                                     result = setup_service.apply_market_selection(setup_request)
                                 else:
                                     result = setup_service.apply_selection(setup_request)
+                                if (
+                                    not spoiler_only_request
+                                    and "spoiler_free_mode" in result
+                                ):
+                                    enabled = apply_live_spoiler_free_mode(
+                                        config,
+                                        result["spoiler_free_mode"],
+                                    )
+                                    if enabled:
+                                        consume_spoiler_market_baselines(
+                                            config,
+                                            snapshots,
+                                            states,
+                                            now,
+                                        )
+                                        alert_queue = purge_spoiler_sensitive_alerts(
+                                            alert_queue
+                                        )
                                 acknowledgement = {
                                     "request_id": request_id,
                                     "ok": True,
-                                    "commentary_style": result["commentary_style"],
                                 }
+                                if result.get("commentary_style") is not None:
+                                    acknowledgement["commentary_style"] = result[
+                                        "commentary_style"
+                                    ]
+                                if result.get("spoiler_free_mode") is not None:
+                                    acknowledgement["spoiler_free_mode"] = result[
+                                        "spoiler_free_mode"
+                                    ]
                                 if result.get("label") is not None:
                                     acknowledgement["label"] = result["label"]
                                 if result.get("language") is not None:
@@ -5265,6 +5524,8 @@ def run_watch(args: argparse.Namespace) -> int:
                         acknowledge_device_match_setup(config, acknowledgement)
                         if style_only_request and acknowledgement.get("ok"):
                             pending_device_style_sync = None
+                        if spoiler_only_request and acknowledgement.get("ok"):
+                            pending_device_spoiler_sync = None
                         setup_acknowledgements.pop(request_id, None)
                 except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
                     pass
@@ -5355,6 +5616,29 @@ def run_watch(args: argparse.Namespace) -> int:
                                 pending_device_style_sync = None
                             else:
                                 next_device_style_sync_at = time.monotonic() + 5
+                        spoiler_after_fetch = (
+                            setup_service.take_spoiler_free_mode_update()
+                        )
+                        if spoiler_after_fetch is not None:
+                            enabled = apply_live_spoiler_free_mode(
+                                config,
+                                spoiler_after_fetch,
+                            )
+                            if enabled:
+                                consume_spoiler_market_baselines(
+                                    config,
+                                    snapshots,
+                                    states,
+                                    now,
+                                )
+                                alert_queue = purge_spoiler_sensitive_alerts(
+                                    alert_queue
+                                )
+                            pending_device_spoiler_sync = enabled
+                            if sync_device_spoiler_free_mode(config, enabled):
+                                pending_device_spoiler_sync = None
+                            else:
+                                next_device_spoiler_sync_at = time.monotonic() + 5
                     kalshi_failures = 0
                     next_kalshi_poll_at = max(
                         poll_started_at + poll_plan.kalshi_seconds,
@@ -5368,6 +5652,14 @@ def run_watch(args: argparse.Namespace) -> int:
                             continue
                         state = states[market.ticker]
                         alerts = evaluate_market(snapshot, market, state, now)
+                        alerts = apply_spoiler_policy_to_market_alerts(
+                            config.spoiler_free_mode,
+                            alerts,
+                            snapshot,
+                            market,
+                            state,
+                            now,
+                        )
                         for alert in alerts:
                             pending.append((alert, snapshot, market, state))
                 except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
@@ -5398,6 +5690,29 @@ def run_watch(args: argparse.Namespace) -> int:
                                 pending_device_style_sync = None
                             else:
                                 next_device_style_sync_at = time.monotonic() + 5
+                        spoiler_after_fetch = (
+                            setup_service.take_spoiler_free_mode_update()
+                        )
+                        if spoiler_after_fetch is not None:
+                            enabled = apply_live_spoiler_free_mode(
+                                config,
+                                spoiler_after_fetch,
+                            )
+                            if enabled:
+                                consume_spoiler_market_baselines(
+                                    config,
+                                    snapshots,
+                                    states,
+                                    now,
+                                )
+                                alert_queue = purge_spoiler_sensitive_alerts(
+                                    alert_queue
+                                )
+                            pending_device_spoiler_sync = enabled
+                            if sync_device_spoiler_free_mode(config, enabled):
+                                pending_device_spoiler_sync = None
+                            else:
+                                next_device_spoiler_sync_at = time.monotonic() + 5
                     previous_poll_tier = poll_plan.tier
                     latest_match = match
                     poll_plan = adaptive_polling_plan(config, latest_match, now)
@@ -5423,6 +5738,11 @@ def run_watch(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
 
+            if config.spoiler_free_mode:
+                pending = [
+                    item for item in pending if not item[0].spoiler_sensitive
+                ]
+                alert_queue = purge_spoiler_sensitive_alerts(alert_queue)
             alert_queue = merge_alert_queue(alert_queue, pending, cycle_monotonic)
 
             current_display_command = persistent_display_command(config, snapshots)

@@ -45,8 +45,8 @@ from a phone.
 2. **Open Match Setup.** Double-tap the touch bar on Stack-chan's head, or
    briefly press Power, to show the setup QR. Scan it with your phone.
 3. **Choose what to watch.** Select a match, supported team (or Neutral),
-   optional pregame position (or No position), and commentary style, then tap
-   **Start watching**.
+   optional pregame position (or No position), commentary style, and whether
+   to use spoiler protection, then tap **Start watching**.
 4. **Wait for confirmation.** The watcher validates the ESPN/Kalshi pairing,
    updates its configuration, and acknowledges the device. The new selection
    takes effect without restarting the watcher or device. Changing only the
@@ -71,6 +71,8 @@ standalone-market details.
   facts, with compact on-device balloons.
 - Separate support and position perspectives, including explicit conflict and
   uncertain-event wording.
+- Optional spoiler protection suppresses proactive Kalshi alerts while
+  confirmed ESPN events and passive probability/ticker updates continue.
 - Phone-based match setup with live Chinese/English switching and hot reload.
 - Optional LAN TTS; visual feedback and tone patterns still work without it.
 
@@ -79,8 +81,9 @@ standalone-market details.
 ### Already installed
 
 Update the repository and restart the watcher. Support/position wording,
-position-based market selection, and the global player catalog are watcher-only
-changes; an installed 1.5.0 mod and the official host can stay in place.
+position-based market selection, and the global player catalog remain
+watcher-only changes. The phone spoiler-protection switch requires Matchday
+Mod 1.6.0, but the official host can stay in place.
 
 ```sh
 export MATCHDAY_DIR="$HOME/src/stackchan-matchday"
@@ -92,7 +95,8 @@ python3 tools/stackchan_kalshi_watch.py \
 
 Deploy `config/espn_player_catalog.json` with the watcher checkout. For exact
 upgrade boundaries, see the bilingual
-[Matchday MOD 1.5.0 notes](docs/releases/1.5.0.md) and
+[Matchday MOD 1.6.0 notes](docs/releases/1.6.0.md),
+[1.5.0 notes](docs/releases/1.5.0.md), and
 [1.4.0 commentary-style notes](docs/releases/1.4.0.md).
 
 ### First installation
@@ -144,7 +148,7 @@ not the primary QR flow.
 | [Development](docs/development.md) | Repository map, tests, archive builds, and replay tooling |
 | [Host preparation](host/README.md) | Partition and optional CJK-font patches |
 | [Commentary styles PRD](docs/commentary-styles-prd.md) | Product rules and implementation contract |
-| [Release notes](docs/releases/1.5.0.md) | Version-specific upgrade boundaries |
+| [Release notes](docs/releases/1.6.0.md) | Version-specific upgrade boundaries |
 | [GitHub Wiki](https://github.com/xymeow/stackchan-matchday/wiki) | Human- and agent-friendly navigation, FAQ, and field debugging |
 
 English guides link to their Chinese counterparts at the top of each page.
@@ -163,6 +167,9 @@ short operational index and troubleshooting layer.
 - Commentary style can change during a match without resetting ESPN history,
   market baselines, queues, or polling state. API compatibility is documented
   in the [Device API guide](docs/device-api.md).
+- Spoiler protection can also change live. It silences proactive Kalshi
+  alerts, not the passive probability bar or ticker, and never suppresses
+  confirmed ESPN events.
 
 ### For maintainers and AI agents
 

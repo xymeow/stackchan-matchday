@@ -207,6 +207,7 @@ export function statusPayload() {
     network: networkPayload(),
     lastCommand: state.lastCommand,
     lastError: state.lastError,
+    lastAbort: state.diagnostics.lastAbort ?? '',
   }
 }
 

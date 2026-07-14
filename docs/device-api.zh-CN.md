@@ -84,6 +84,7 @@ curl --request POST \
 | `/api/match-setup/ack` | watcher 确认或拒绝应用结果 |
 | `/api/match-setup/language` | 更新界面语言 |
 | `/api/match-setup/style` | 更新播报语气 |
+| `/api/match-setup/spoiler` | 更新防剧透模式 |
 
 这是一个异步确认流程：设备收到手机选择不代表 watcher 已采用。客户端应显示待处理
 状态，直到 watcher 返回 ack；不要在提交后自行假定配置成功。
@@ -110,6 +111,30 @@ Content-Type: application/json
 
 `GET /api/setup/status` 返回 watcher 当前生效值。切换只影响新生成文案，不应重置
 ESPN 已读事件、盘口基线、告警队列或轮询状态。
+
+### 即时切换防剧透模式
+
+设备接收严格的 JSON 布尔值：
+
+```http
+POST /api/match-setup/spoiler
+Content-Type: application/json
+
+{"spoiler_free_mode":true}
+```
+
+它通过 pending/ack 流程转发。watcher 本机设置服务的对应接口为：
+
+```http
+POST /api/setup/spoiler
+Content-Type: application/json
+
+{"spoiler_free_mode":true}
+```
+
+`GET /api/setup/status` 返回当前生效的 `spoiler_free_mode`。只切换该偏好不会重载
+比赛或重置 ESPN 历史、盘口基线与轮询；开启后丢弃队列中的 Kalshi 提醒，已确认的
+ESPN 事件照常播报，概率条和 ticker 继续静默更新。
 
 ## 调用约定
 

@@ -72,6 +72,8 @@ The device-facing setup surface uses these endpoints under `/api/match-setup`:
 - `/pending` lets the watcher retrieve that selection.
 - `/ack` confirms success or reports validation failure back to the phone.
 - `/language` updates the persisted device language.
+- `/style` queues a commentary-style-only update.
+- `/spoiler` queues a spoiler-protection-only update.
 
 These endpoints form a pending/ack handshake: the phone writes to Stack-chan,
 the watcher validates and atomically updates its local configuration, and the
@@ -93,6 +95,23 @@ admin service accepts the same body at `POST /api/setup/style`.
 Changing only the style must not reset ESPN event history, market baselines,
 alert queues, or polling state, and must not replay old commentary. The new
 style applies to subsequently generated alerts.
+
+## Spoiler-protection endpoints
+
+The device accepts a strict JSON boolean at `POST /api/match-setup/spoiler`:
+
+```json
+{"spoiler_free_mode":true}
+```
+
+It relays the preference through pending/ack. The watcher-local service accepts
+the same body at `POST /api/setup/spoiler`, and `GET /api/setup/status` reports
+the effective `spoiler_free_mode` value.
+
+Changing only this preference must not reload the selected match or reset ESPN
+history, market baselines, or polling. Enabling it drops queued Kalshi alerts;
+confirmed ESPN events continue, while the probability bar and ticker still
+update silently.
 
 ## Calling conventions
 

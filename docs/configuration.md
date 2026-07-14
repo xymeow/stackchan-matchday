@@ -4,9 +4,10 @@
 
 The phone setup page is the normal control surface. It changes all labels
 immediately, persists its language on the device, and applies the selected
-match, supported team, optional position, and commentary style through the
-watcher's pending/ack flow. The watcher validates the ESPN/Kalshi pairing,
-atomically updates its local JSON, hot-reloads, and acknowledges Stack-chan.
+match, supported team, optional position, commentary style, and spoiler
+protection through the watcher's pending/ack flow. The watcher validates the
+ESPN/Kalshi pairing, atomically updates its local JSON, hot-reloads, and
+acknowledges Stack-chan.
 
 ## Match Setup flow
 
@@ -48,6 +49,7 @@ legacy string or a localized object:
 ```json
 {
   "language": "en",
+  "spoiler_free_mode": false,
   "mac_voice": {"zh": "Tingting", "en": "Samantha"},
   "espn": {
     "commentary_style": "balanced",
@@ -118,6 +120,22 @@ suspected-goal alerts. It changes wording only: TTS voice and rate, sound
 effects, celebrations, expressions, lights, priority, and alert switches are
 unchanged. Switching during a match affects newly generated alerts without
 replaying old ESPN events or resetting market baselines, queues, or polling.
+
+## Spoiler protection
+
+Top-level `spoiler_free_mode` is a persistent global boolean and defaults to
+`false`. Both phone setup pages expose Normal and Spoiler protection choices.
+
+When enabled, the watcher still polls Kalshi and silently updates market
+baselines, the probability bar, and ticker, but suppresses all proactive
+Kalshi-derived alerts, including price/spread or market-status changes,
+closing notices, and suspected-goal signals. Confirmed ESPN events, phases,
+and results continue normally.
+
+The dedicated hot-update path applies during a match without resetting ESPN
+history, market state, polling, or the selected fixture. Enabling protection
+also drops queued market alerts and consumes their current baselines, so
+turning it off later does not replay accumulated movement.
 
 ## Support and position perspectives
 
