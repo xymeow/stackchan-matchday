@@ -1,6 +1,28 @@
 // Text command dispatcher shared by HTTP /api/command and /api/control.
 // The stable command strings let watcher and device tooling evolve separately.
+import Modules from 'modules'
 import Timer from 'timer'
+
+// Optional: only present when the host bundles modules/base/instrumentation.
+// Exposes XS heap usage in /api/status so heap exhaustion (the 2026-07-15
+// "Chunk allocation failed" reboot signature) can be graphed from outside.
+let Instrumentation
+try {
+  Instrumentation = Modules.importNow('instrumentation')
+} catch (_error) {}
+
+function instrumentsPayload() {
+  if (!Instrumentation) return undefined
+  const values = {}
+  try {
+    for (let index = 1; index < 40; index++) {
+      const name = Instrumentation.name(index)
+      if (!name) break
+      values[name] = Instrumentation.get(index)
+    }
+  } catch (_error) {}
+  return values
+}
 import {
   EMOTIONS,
   MOD_NAME,
@@ -208,6 +230,7 @@ export function statusPayload() {
     lastCommand: state.lastCommand,
     lastError: state.lastError,
     lastAbort: state.diagnostics.lastAbort ?? '',
+    instruments: instrumentsPayload(),
   }
 }
 

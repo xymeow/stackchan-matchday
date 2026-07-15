@@ -49,7 +49,15 @@ globalThis.abort = function (status, exception) {
     const reason = `${status ?? 'abort'}: ${exception ?? ''}`.slice(0, 160)
     savePreference('lastAbort', reason)
   } catch (_error) {
-    // never throw from the abort hook
+    // Building the reason string allocates; when the abort IS heap
+    // exhaustion that fails (observed 2026-07-15: 20-byte chunk allocations
+    // failing right before "XS abort"). Fall back to persisting the status
+    // string as-is — a plain host string with far better odds.
+    try {
+      savePreference('lastAbort', status)
+    } catch (_error2) {
+      // never throw from the abort hook
+    }
   }
   return false
 }

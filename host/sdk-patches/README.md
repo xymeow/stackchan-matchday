@@ -26,29 +26,59 @@ The patch fixes two independent races behind the same panic signature
 (discussed with the maintainer in
 [moddable#1655](https://github.com/Moddable-OpenSource/moddable/issues/1655)):
 
-1. **Teardown use-after-free.** `removeTCPCallbacks()` now clears the lwIP
-   callback argument first (`tcp_arg(pcb, NULL)`) and then the callbacks —
-   plain pointer stores, per maintainer guidance; no tcpip-thread marshaling
-   needed. `tcpReceive`/`tcpSent`/`tcpError` gain NULL-argument guards so any
-   late delivery observes NULL and bails. (An earlier revision marshaled the
-   clear via `tcpip_api_call`; soak testing showed the simpler arg-first
-   variant is sufficient. The unused `tcp_clear_callbacks_safe` helper may
-   remain in modLwipSafe from that revision.)
+1. **Teardown use-after-free.** `removeTCPCallbacks()` clears the lwIP callback
+   argument first (`tcp_arg(pcb, NULL)`) and then the callbacks;
+   `tcpReceive`/`tcpSent`/`tcpError` gain NULL-argument guards so any *late*
+   delivery observes NULL and bails.
 2. **Receive-buffer list race.** `tcp->buffers` was appended to by the lwIP
    task (`tcpReceive` walks to the tail) while the XS task pops and frees
    head nodes in `xs_tcp_read` — with no synchronization, the tail walk can
    traverse a node mid-free. Both sides now do their pointer surgery inside
    `builtinCriticalSection` (heap operations stay outside the critical
-   section). This was the direct cause of the `LoadProhibited` panics at the
-   `walker->next` walk and kept crashing hosts that had only fix 1.
+   section). `xs_tcp_read`'s length pre-scan and the destructor's buffer drain
+   are guarded too.
+3. **In-flight `tcpReceive` vs destructor (added 2026-07-15).** The arg-first
+   NULL guard only protects callbacks that *start* after the clear. It does
+   nothing for a `tcpReceive` already past the guard and mid-tail-walk when the
+   XS task runs `xs_tcp_destructor` and frees `tcp->buffers`/`tcp`. Under the
+   1.6.0 mod's *concurrent* HTTP handling, connection teardowns overlap inbound
+   data far more often than the old serialized handler did, and a
+   `tcpReceive` `LoadProhibited` (reached via `tcp_input`) began recurring at
+   ~25 min under only light polling. The destructor was changed to clear
+   callbacks through the marshaled `tcp_clear_callbacks_safe`.
 
-Soak evidence: the device previously crashed every 15–25 minutes under
-ordinary watcher traffic; with both fixes it has run clean for hours
-(instrumented via the abort hook so app-level restarts are separable).
+   **⚠️ Fix 3 is NOT sufficient — the crash still recurs (2026-07-15).** After
+   deploying it, the device crashed again at 27 min under real load with a
+   healthy heap. Same `tcpReceive` backtrace, but the fault address is a
+   *poison* value (`EXCVADDR=0xe2f61b44`) and `tcp` itself is valid: the fault
+   is a *buffer-list node* freed while still linked (`tcp->buffers` walking a
+   poisoned node), not the `tcp` record. The receive-buffer node lifetime is
+   shared across `tcpReceive` (append, tcpip thread), `xs_tcp_read` (consume +
+   free, XS thread), and the destructor drain, on two cores; the
+   `builtinCriticalSection` guards on the pointer surgery do not cover the
+   whole node lifetime. **This is an unresolved SDK-level race that needs the
+   maintainer.** The marshaled destructor change is kept as a partial
+   hardening but is not claimed to fix the crash.
+
+Soak evidence: the device previously crashed every 15–25 minutes; fixes 1+2
+ran clean for 2.1 hours *before* 1.6.0's concurrent HTTP handling, which raised
+teardown/receive overlap and reopened the receive-path race. Fix 3 did not
+close it. Escalation with the poison-UAF evidence is pending on #1655.
+
+**Known remaining gap (not fixed here).** Listener accept path: a pending
+socket (accepted by lwIP, not yet consumed by `xs_listener_read`) has no error
+callback — see the `//@@ also install error handler` comment in `listenerAccept`.
+If the peer RSTs a pending connection before the XS task consumes it, lwIP frees
+the pcb and `pending->skt` dangles; `xs_listener_read` then calls `tcp_err()` on
+it and trips `LWIP_ASSERT(... pcb->state != LISTEN)`. Only reproduced under a
+pathological burst (10 simultaneous connections RST together), not under match
+load. A correct fix installs an error handler on pending sockets and removes
+them from the pending list under lock; it needs its own soak and a separate
+upstream discussion.
 
 Reported and fixed upstream: issue
 [moddable#1655](https://github.com/Moddable-OpenSource/moddable/issues/1655),
-PR [moddable#1656](https://github.com/Moddable-OpenSource/moddable/pull/1656)
-(same two changes). Once the PR lands, drop this patch and update the SDK
-instead. `mcconfig` rebuilds pick the change up automatically; the mod does
-not need to be rebuilt.
+PR [moddable#1656](https://github.com/Moddable-OpenSource/moddable/pull/1656).
+Once the PR lands (with fix 3), drop this patch and update the SDK instead.
+`mcconfig` rebuilds pick the change up automatically; the mod does not need to
+be rebuilt.

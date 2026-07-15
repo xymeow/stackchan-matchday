@@ -210,6 +210,15 @@ class ModLayoutTests(unittest.TestCase):
         manifest = (ROOT / "mod" / "manifest.json").read_text(encoding="utf-8")
         self.assertIn('"matchday/listen-safe": "./listen-safe"', manifest)
 
+    def test_status_exposes_heap_instruments_and_abort_hook_survives_oom(self):
+        # Heap-exhaustion reboots (2026-07-15) are diagnosable from outside:
+        # /api/status carries XS heap usage when the host has instrumentation.
+        self.assertIn("Modules.importNow('instrumentation')", COMMANDS_SOURCE)
+        self.assertIn("instruments: instrumentsPayload()", COMMANDS_SOURCE)
+        # When the abort IS heap exhaustion, building the reason string fails;
+        # the hook must still persist something.
+        self.assertIn("savePreference('lastAbort', status)", MOD_SOURCE)
+
     def test_tts_uses_deep_buffer_with_host_fallback(self):
         # The host pins WavStreamer to 600ms; XS busy bursts while speaking
         # overrun that and every overrun is an audible mid-sentence dropout.
@@ -219,6 +228,13 @@ class ModLayoutTests(unittest.TestCase):
         self.assertIn("Modules.importNow('tts-remote')", AUDIO_SOURCE)
         tts_source = (ROOT / "mod" / "tts-remote-safe.js").read_text(encoding="utf-8")
         self.assertIn("bufferDuration: this.bufferDuration", tts_source)
+        # A stalled stream must not leave the caller's busy flag stuck (observed
+        # 2026-07-15: silenced all commentary until reboot). A progress-reset
+        # watchdog settles the promise so speakRemote's finally clears busy.
+        self.assertIn("STALL_TIMEOUT_MS", tts_source)
+        self.assertIn("tts stream stalled", tts_source)
+        # progress resets the watchdog from both onReady and onPlayed
+        self.assertGreaterEqual(tts_source.count("kick()"), 3)
         manifest = (ROOT / "mod" / "manifest.json").read_text(encoding="utf-8")
         self.assertIn('"matchday/tts-remote-safe": "./tts-remote-safe"', manifest)
 
