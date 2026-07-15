@@ -81,7 +81,8 @@ python3 "$MATCHDAY_DIR/tools/stackchan_match_replay.py" \
 需要不触发断点暂停的日志时，使用 `$MODDABLE/tools/xsbug-log`。需要确定性重装时，
 按照[安装与升级](getting-started.zh-CN.md)中的无调试器构建与 esptool 流程操作。
 现场症状与安全恢复顺序由
-[GitHub Wiki](https://github.com/xymeow/stackchan-matchday/wiki) 维护。
+[调试与恢复 Wiki 页面](https://github.com/xymeow/stackchan-matchday/wiki/Debugging-and-recovery)
+维护。
 
 ## 文档同步清单
 
@@ -92,7 +93,9 @@ python3 "$MATCHDAY_DIR/tools/stackchan_match_replay.py" \
 3. 用户入口 `README.md` 与 `README.zh-CN.md`，但只保留摘要和链接。
 4. 版本说明 `docs/releases/`。
 5. 如果产品规则变化，更新 `docs/commentary-styles-prd.md`。
-6. 环境型排障经验可补到 Wiki，并从 README 文档索引链接。
+6. 环境型排障经验可补到
+   [常见问题与排障 Wiki 页面](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting)，
+   并从 README 文档索引链接。
 
 中英文文档的标题、命令和事实应保持一致；中文可以自然表达，不需要逐句直译。
 

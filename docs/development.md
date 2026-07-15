@@ -81,7 +81,7 @@ Use `$MODDABLE/tools/xsbug-log` when you need logs without breakpoint freezes.
 For a deterministic reinstall, follow the debugger-free build and esptool path
 in [Getting started](getting-started.md). Field symptoms and short recovery
 recipes are indexed in the
-[GitHub Wiki](https://github.com/xymeow/stackchan-matchday/wiki).
+[Debugging and recovery Wiki page](https://github.com/xymeow/stackchan-matchday/wiki/Debugging-and-recovery).
 
 ## Documentation synchronization checklist
 
@@ -94,8 +94,9 @@ When behavior changes, update the applicable items together:
    summaries and links there.
 4. Release notes under `docs/releases/`.
 5. `docs/commentary-styles-prd.md` when product rules change.
-6. Environment-specific troubleshooting in the Wiki when useful, linked from
-   the README documentation index.
+6. Environment-specific troubleshooting in the
+   [Troubleshooting Wiki page](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting)
+   when useful, linked from the README documentation index.
 
 English and Chinese headings, commands, and facts should remain aligned. The
 Chinese text may use natural phrasing rather than translating sentence by

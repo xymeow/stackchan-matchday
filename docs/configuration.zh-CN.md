@@ -15,6 +15,10 @@
 | watcher `http://127.0.0.1:8788/setup` | watcher 电脑上的本机管理后备页 |
 | `config/kalshi_watchlist.json` | 轮询、提醒开关、市场、TTS 和高级 ESPN 配置 |
 
+watcher 设置服务默认只监听 `127.0.0.1`。确实需要从可信局域网访问这个可选后备页时，
+再把 `setup_server.host` 显式设为 `0.0.0.0`；不要做公网端口转发。内置服务目前只接受
+IPv4 地址或主机名，不支持 IPv6 字面地址。
+
 手机设置流程使用 pending/ack：设备先保存待处理选择，watcher 校验 ESPN 与 Kalshi
 双方匹配，原子更新 JSON、热重载，再确认设备。只切换语气时不会重置 ESPN 已读事件、
 盘口基线、告警队列或轮询状态。
