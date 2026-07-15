@@ -1,8 +1,39 @@
 diff --git a/modules/io/socket/lwip/tcp.c b/modules/io/socket/lwip/tcp.c
-index 0f90023..63a2820 100644
+index 0f90023..95030f1 100644
 --- a/modules/io/socket/lwip/tcp.c
 +++ b/modules/io/socket/lwip/tcp.c
-@@ -262,6 +262,11 @@ void xs_tcp_destructor(void *data)
+@@ -242,14 +242,26 @@ void xs_tcp_destructor(void *data)
+ 	if (!tcp) return;
+ 
+ 	if (tcp->skt) {
+-		removeTCPCallbacks(tcp);
++		// Marshaled: when this returns, no callback for this pcb is running
++		// or can start, so an in-flight tcpReceive that already loaded this
++		// record cannot race the frees below.
++		tcp_clear_callbacks_safe(tcp->skt);
++		tcp->triggerable &= ~kTCPWritable;
+ 
+ 		tcp_close_safe(tcp->skt);
+ 	}
+ 
+-	while (tcp->buffers) {
+-		TCPBuffer buffer = tcp->buffers;
+-		tcp->buffers = buffer->next;
++	for (;;) {
++		TCPBuffer buffer;
++
++		// Detach under the append guard; free outside it.
++		builtinCriticalSectionBegin();
++		buffer = tcp->buffers;
++		if (buffer)
++			tcp->buffers = buffer->next;
++		builtinCriticalSectionEnd();
++		if (!buffer)
++			break;
+ 		pbuf_free_safe(buffer->pb);
+ 		c_free(buffer);
+ 	}
+@@ -262,6 +274,11 @@ void xs_tcp_destructor(void *data)
  void removeTCPCallbacks(TCP tcp)
  {
  	if (tcp->skt) {
@@ -14,7 +45,21 @@ index 0f90023..63a2820 100644
  		tcp_recv(tcp->skt, NULL);
  		tcp_sent(tcp->skt, NULL);
  		tcp_err(tcp->skt, NULL);
-@@ -358,7 +363,11 @@ void xs_tcp_read(xsMachine *the)
+@@ -313,8 +330,13 @@ void xs_tcp_read(xsMachine *the)
+ 		uint8_t allocate = 1;
+ 		xsUnsignedValue byteLength;
+ 
++		// Walk under the same guard tcpReceive appends under: an unlocked
++		// traversal on the other core has no acquire ordering against the
++		// appender's initializing stores.
++		builtinCriticalSectionBegin();
+ 		for (buffer = tcp->buffers; NULL != buffer; buffer = buffer->next)
+ 			available += buffer->bytes;
++		builtinCriticalSectionEnd();
+ 
+ 		if (0 == xsmcArgc)
+ 			requested = available;
+@@ -358,7 +380,11 @@ void xs_tcp_read(xsMachine *the)
  			buffer->fragment = fragment->next;
  			buffer->fragmentOffset = 0;
  			if (NULL == buffer->fragment) {
@@ -26,7 +71,7 @@ index 0f90023..63a2820 100644
  				tcp_recved_safe(tcp->skt, buffer->pb->tot_len);
  				pbuf_free_safe(buffer->pb);
  				c_free(buffer);
-@@ -535,6 +544,9 @@ void tcpError(void *arg, err_t err)
+@@ -535,6 +561,9 @@ void tcpError(void *arg, err_t err)
  {
  	TCP tcp = arg;
  
@@ -36,7 +81,7 @@ index 0f90023..63a2820 100644
  	removeTCPCallbacks(tcp);
  	tcp->skt = NULL;		// "pcb is already freed when this callback is called"
  	if (kTCPError & tcp->triggerable)
-@@ -546,6 +558,12 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+@@ -546,6 +575,12 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
  	TCP tcp = arg;
  	TCPBuffer buffer;
  
@@ -49,7 +94,7 @@ index 0f90023..63a2820 100644
  	if ((NULL == pb) || (ERR_OK != err)) {		//@@ when is err set here?
  		removeTCPCallbacks(tcp);
  #if ESP32
-@@ -572,6 +590,10 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+@@ -572,6 +607,10 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
  
  	modInstrumentationAdjust(NetworkBytesRead, buffer->bytes);
  
@@ -60,7 +105,7 @@ index 0f90023..63a2820 100644
  	if (tcp->buffers) {
  		TCPBuffer walker;
  
-@@ -581,6 +603,7 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+@@ -581,6 +620,7 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
  	}
  	else
  		tcp->buffers = buffer;
@@ -68,7 +113,7 @@ index 0f90023..63a2820 100644
  
  	if (tcp->triggerable & kTCPReadable)
  		tcpTrigger(tcp, kTCPReadable);
-@@ -590,6 +613,9 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
+@@ -590,6 +630,9 @@ err_t tcpReceive(void *arg, struct tcp_pcb *pcb, struct pbuf *pb, err_t err)
  
  err_t tcpSent(void *arg, struct tcp_pcb *pcb, u16_t len)
  {
@@ -78,48 +123,3 @@ index 0f90023..63a2820 100644
  	tcpTrigger((TCP)arg, kTCPWritable);
  	return ERR_OK;
  }
-diff --git a/modules/network/socket/lwip/modLwipSafe.c b/modules/network/socket/lwip/modLwipSafe.c
-index a4cc7fb..dc699dd 100644
---- a/modules/network/socket/lwip/modLwipSafe.c
-+++ b/modules/network/socket/lwip/modLwipSafe.c
-@@ -169,6 +169,28 @@ void tcp_recved_safe(struct tcp_pcb *tcpPCB, u16_t len)
- 	tcpip_callback_with_block(tcp_recved_INLWIP, msg, 1);
- }
- 
-+static err_t tcp_clear_callbacks_INLWIP(struct tcpip_api_call_data *tcpMsg)
-+{
-+	LwipMsg msg = (LwipMsg)tcpMsg;
-+	if (msg->tcpPCB) {
-+		tcp_arg(msg->tcpPCB, NULL);
-+		tcp_recv(msg->tcpPCB, NULL);
-+		tcp_sent(msg->tcpPCB, NULL);
-+		tcp_err(msg->tcpPCB, NULL);
-+	}
-+	return ERR_OK;
-+}
-+
-+// Synchronous: when this returns, no lwIP callback for this pcb is running
-+// or can run again, so the caller may safely free its callback argument.
-+void tcp_clear_callbacks_safe(struct tcp_pcb *tcpPCB)
-+{
-+	LwipMsgRecord msg = {
-+		.tcpPCB = tcpPCB,
-+	};
-+	tcpip_api_call(tcp_clear_callbacks_INLWIP, &msg.call);
-+}
-+
- static err_t tcp_listen_INLWIP(struct tcpip_api_call_data *tcpMsg)
- {
- 	LwipMsg msg = (LwipMsg)tcpMsg;
-diff --git a/modules/network/socket/lwip/modLwipSafe.h b/modules/network/socket/lwip/modLwipSafe.h
-index 717808d..0f5c94f 100644
---- a/modules/network/socket/lwip/modLwipSafe.h
-+++ b/modules/network/socket/lwip/modLwipSafe.h
-@@ -52,6 +52,7 @@
- 	#include "lwip/raw.h"
- 
- 	struct tcp_pcb *tcp_new_safe(void);
-+	void tcp_clear_callbacks_safe(struct tcp_pcb *tcpPCB);
- 	err_t tcp_connect_safe(struct tcp_pcb *tcpPCB, const ip_addr_t *ipaddr, u16_t port, tcp_connected_fn connected);
- 	u8_t pbuf_free_safe(struct pbuf *p);
- 	err_t tcp_bind_safe(struct tcp_pcb *tcpPCB, const ip_addr_t *ipaddr, u16_t port);

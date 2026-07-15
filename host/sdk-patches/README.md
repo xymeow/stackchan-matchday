@@ -26,29 +26,50 @@ The patch fixes two independent races behind the same panic signature
 (discussed with the maintainer in
 [moddable#1655](https://github.com/Moddable-OpenSource/moddable/issues/1655)):
 
-1. **Teardown use-after-free.** `removeTCPCallbacks()` now clears the lwIP
-   callback argument first (`tcp_arg(pcb, NULL)`) and then the callbacks —
-   plain pointer stores, per maintainer guidance; no tcpip-thread marshaling
-   needed. `tcpReceive`/`tcpSent`/`tcpError` gain NULL-argument guards so any
-   late delivery observes NULL and bails. (An earlier revision marshaled the
-   clear via `tcpip_api_call`; soak testing showed the simpler arg-first
-   variant is sufficient. The unused `tcp_clear_callbacks_safe` helper may
-   remain in modLwipSafe from that revision.)
+1. **Teardown use-after-free.** `removeTCPCallbacks()` clears the lwIP callback
+   argument first (`tcp_arg(pcb, NULL)`) and then the callbacks;
+   `tcpReceive`/`tcpSent`/`tcpError` gain NULL-argument guards so any *late*
+   delivery observes NULL and bails.
 2. **Receive-buffer list race.** `tcp->buffers` was appended to by the lwIP
    task (`tcpReceive` walks to the tail) while the XS task pops and frees
    head nodes in `xs_tcp_read` — with no synchronization, the tail walk can
    traverse a node mid-free. Both sides now do their pointer surgery inside
    `builtinCriticalSection` (heap operations stay outside the critical
-   section). This was the direct cause of the `LoadProhibited` panics at the
-   `walker->next` walk and kept crashing hosts that had only fix 1.
+   section). `xs_tcp_read`'s length pre-scan and the destructor's buffer drain
+   are guarded too.
+3. **In-flight `tcpReceive` vs destructor (added 2026-07-15).** The arg-first
+   NULL guard only protects callbacks that *start* after the clear. It does
+   nothing for a `tcpReceive` already past the guard and mid-tail-walk when the
+   XS task runs `xs_tcp_destructor` and frees `tcp->buffers`/`tcp`. Under the
+   1.6.0 mod's *concurrent* HTTP handling, connection teardowns overlap inbound
+   data far more often than the old serialized handler did, and this window
+   started firing: a `LoadProhibited` in `tcpReceive` (tcp.c:600) reached via
+   `tcp_input`, at ~25 min under only light polling. The destructor now clears
+   callbacks through the marshaled `tcp_clear_callbacks_safe`
+   (`tcpip_api_call`): because `tcpReceive` runs on the `tcpip` thread, the
+   marshaled clear cannot execute until any in-flight `tcpReceive` has
+   returned. **This revises the note in the upstream issue** that the simpler
+   arg-first variant alone was sufficient — it was, until concurrent
+   connection churn was introduced. #1656 needs updating to match.
 
 Soak evidence: the device previously crashed every 15–25 minutes under
-ordinary watcher traffic; with both fixes it has run clean for hours
-(instrumented via the abort hook so app-level restarts are separable).
+ordinary watcher traffic; with fixes 1+2 it ran clean for 2.1 hours, but fix 3
+was needed once 1.6.0 added concurrent HTTP handling.
+
+**Known remaining gap (not fixed here).** Listener accept path: a pending
+socket (accepted by lwIP, not yet consumed by `xs_listener_read`) has no error
+callback — see the `//@@ also install error handler` comment in `listenerAccept`.
+If the peer RSTs a pending connection before the XS task consumes it, lwIP frees
+the pcb and `pending->skt` dangles; `xs_listener_read` then calls `tcp_err()` on
+it and trips `LWIP_ASSERT(... pcb->state != LISTEN)`. Only reproduced under a
+pathological burst (10 simultaneous connections RST together), not under match
+load. A correct fix installs an error handler on pending sockets and removes
+them from the pending list under lock; it needs its own soak and a separate
+upstream discussion.
 
 Reported and fixed upstream: issue
 [moddable#1655](https://github.com/Moddable-OpenSource/moddable/issues/1655),
-PR [moddable#1656](https://github.com/Moddable-OpenSource/moddable/pull/1656)
-(same two changes). Once the PR lands, drop this patch and update the SDK
-instead. `mcconfig` rebuilds pick the change up automatically; the mod does
-not need to be rebuilt.
+PR [moddable#1656](https://github.com/Moddable-OpenSource/moddable/pull/1656).
+Once the PR lands (with fix 3), drop this patch and update the SDK instead.
+`mcconfig` rebuilds pick the change up automatically; the mod does not need to
+be rebuilt.
