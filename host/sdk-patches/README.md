@@ -42,19 +42,28 @@ The patch fixes two independent races behind the same panic signature
    nothing for a `tcpReceive` already past the guard and mid-tail-walk when the
    XS task runs `xs_tcp_destructor` and frees `tcp->buffers`/`tcp`. Under the
    1.6.0 mod's *concurrent* HTTP handling, connection teardowns overlap inbound
-   data far more often than the old serialized handler did, and this window
-   started firing: a `LoadProhibited` in `tcpReceive` (tcp.c:600) reached via
-   `tcp_input`, at ~25 min under only light polling. The destructor now clears
-   callbacks through the marshaled `tcp_clear_callbacks_safe`
-   (`tcpip_api_call`): because `tcpReceive` runs on the `tcpip` thread, the
-   marshaled clear cannot execute until any in-flight `tcpReceive` has
-   returned. **This revises the note in the upstream issue** that the simpler
-   arg-first variant alone was sufficient — it was, until concurrent
-   connection churn was introduced. #1656 needs updating to match.
+   data far more often than the old serialized handler did, and a
+   `tcpReceive` `LoadProhibited` (reached via `tcp_input`) began recurring at
+   ~25 min under only light polling. The destructor was changed to clear
+   callbacks through the marshaled `tcp_clear_callbacks_safe`.
 
-Soak evidence: the device previously crashed every 15–25 minutes under
-ordinary watcher traffic; with fixes 1+2 it ran clean for 2.1 hours, but fix 3
-was needed once 1.6.0 added concurrent HTTP handling.
+   **⚠️ Fix 3 is NOT sufficient — the crash still recurs (2026-07-15).** After
+   deploying it, the device crashed again at 27 min under real load with a
+   healthy heap. Same `tcpReceive` backtrace, but the fault address is a
+   *poison* value (`EXCVADDR=0xe2f61b44`) and `tcp` itself is valid: the fault
+   is a *buffer-list node* freed while still linked (`tcp->buffers` walking a
+   poisoned node), not the `tcp` record. The receive-buffer node lifetime is
+   shared across `tcpReceive` (append, tcpip thread), `xs_tcp_read` (consume +
+   free, XS thread), and the destructor drain, on two cores; the
+   `builtinCriticalSection` guards on the pointer surgery do not cover the
+   whole node lifetime. **This is an unresolved SDK-level race that needs the
+   maintainer.** The marshaled destructor change is kept as a partial
+   hardening but is not claimed to fix the crash.
+
+Soak evidence: the device previously crashed every 15–25 minutes; fixes 1+2
+ran clean for 2.1 hours *before* 1.6.0's concurrent HTTP handling, which raised
+teardown/receive overlap and reopened the receive-path race. Fix 3 did not
+close it. Escalation with the poison-UAF evidence is pending on #1655.
 
 **Known remaining gap (not fixed here).** Listener accept path: a pending
 socket (accepted by lwIP, not yet consumed by `xs_listener_read`) has no error
