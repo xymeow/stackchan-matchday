@@ -228,6 +228,13 @@ class ModLayoutTests(unittest.TestCase):
         self.assertIn("Modules.importNow('tts-remote')", AUDIO_SOURCE)
         tts_source = (ROOT / "mod" / "tts-remote-safe.js").read_text(encoding="utf-8")
         self.assertIn("bufferDuration: this.bufferDuration", tts_source)
+        # A stalled stream must not leave the caller's busy flag stuck (observed
+        # 2026-07-15: silenced all commentary until reboot). A progress-reset
+        # watchdog settles the promise so speakRemote's finally clears busy.
+        self.assertIn("STALL_TIMEOUT_MS", tts_source)
+        self.assertIn("tts stream stalled", tts_source)
+        # progress resets the watchdog from both onReady and onPlayed
+        self.assertGreaterEqual(tts_source.count("kick()"), 3)
         manifest = (ROOT / "mod" / "manifest.json").read_text(encoding="utf-8")
         self.assertIn('"matchday/tts-remote-safe": "./tts-remote-safe"', manifest)
 
