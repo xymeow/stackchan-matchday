@@ -2,8 +2,8 @@
 
 [English](configuration.md) | [简体中文](configuration.zh-CN.md)
 
-本文说明 watcher 的持久配置、手机 Match Setup、语言与三档播报、支持/持仓视角、
-球员目录和独立市场模式。配置示例位于
+本文说明 watcher 的持久配置、手机 Match Setup、语言与三档播报、防剧透模式、
+支持/持仓视角、球员目录和独立市场模式。配置示例位于
 `config/kalshi_watchlist.example.json`；请把本机修改写入未提交的
 `config/kalshi_watchlist.json`。
 
@@ -33,6 +33,7 @@ IPv4 地址或主机名，不支持 IPv6 字面地址。
   "stackchan_host": "stackchan.local",
   "stackchan_transport": "http",
   "language": "zh",
+  "spoiler_free_mode": false,
   "setup_server": {
     "enabled": true,
     "host": "127.0.0.1",
@@ -107,6 +108,19 @@ python3 tools/stackchan_kalshi_watch.py discover --query 关键词
 三档气泡原则上保持“时间 + 球员/球队 + 事件 + 比分”，只允许标点和少量措辞差异。
 语气只改变文案，不改变 TTS 音色和语速、音效、动作、表情、灯效、优先级或提醒
 开关。比赛中切换立即作用于新提醒，但不会重播旧事件。
+
+## 防剧透模式
+
+顶层 `spoiler_free_mode` 是全局持久布尔值，旧配置缺少时默认 `false`。设备和
+watcher 的手机设置页都提供“普通 / 防剧透”选项。
+
+开启后 watcher 仍持续轮询 Kalshi，并静默更新盘口基线、概率条和 ticker，但不会
+主动播报任何 Kalshi 派生提醒，包括价格/价差、市场状态变化、临近收盘和疑似进球。
+ESPN 已确认的事件、比赛阶段与赛果照常播报。
+
+独立热更新链路可在比赛中即时切换，不会重置 ESPN 已读历史、盘口状态、轮询或当前
+比赛。开启时还会丢弃队列中尚未播出的盘口提醒并消费当前基线，之后关闭不会补播
+累积变化。
 
 ## 支持队与持仓队
 

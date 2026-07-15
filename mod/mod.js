@@ -20,6 +20,7 @@ import {
   nowTicks,
   readPreference,
   safeNetGet,
+  savePreference,
   state,
   toNumber,
   MIN_IDLE_LOOK_INTERVAL_MS,
@@ -38,6 +39,20 @@ import {
 } from 'matchday/ui'
 import { runCommand } from 'matchday/commands'
 import { startHttp } from 'matchday/web'
+
+// Release hosts restart on uncaught exceptions with no console trace left
+// behind (fxAbort -> esp_restart). With the host's MODDEF_XS_ABORTHOOK, this
+// hook runs first: record why we died so /api/status can report it after the
+// reboot. Returning false lets the restart proceed.
+globalThis.abort = function (status, exception) {
+  try {
+    const reason = `${status ?? 'abort'}: ${exception ?? ''}`.slice(0, 160)
+    savePreference('lastAbort', reason)
+  } catch (_error) {
+    // never throw from the abort hook
+  }
+  return false
+}
 
 const SETUP_POWER_DEBOUNCE_MS = 600
 const SETUP_TOP_TAP_MAX_MS = 500
@@ -105,6 +120,15 @@ function restoreSettings(robot) {
       if (pending?.language === 'zh' || pending?.language === 'en') {
         state.matchSetup.language = pending.language
       }
+    }
+
+    const lastAbort = String(readPreference('lastAbort', ''))
+    if (lastAbort) {
+      state.diagnostics.lastAbort = lastAbort
+      trace(`[matchday] previous run aborted: ${lastAbort}\n`)
+      // Consume the record so /api/status only ever reports an abort of the
+      // run immediately before this boot, not one from days ago.
+      savePreference('lastAbort', undefined)
     }
     trace('[matchday] settings restored\n')
   } catch (error) {

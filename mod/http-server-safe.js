@@ -4,8 +4,17 @@
 // and it leaves respondWith() rejections unhandled when a client disconnects.
 // Either failure aborts the complete XS runtime, including the touch handlers.
 import Headers from 'headers'
-import listen from 'listen'
+import listen from 'matchday/listen-safe'
+import Timer from 'timer'
 import { URLSearchParams } from 'url'
+
+// A spoken alert holds its /api/command handler for the whole playback, so the
+// watchdog must outlast the longest legitimate response.
+const REQUEST_TIMEOUT_MS = 45_000
+// lwIP's TCP pcb pool also serves the outbound TTS stream; shed load before
+// queued requests can exhaust it.
+const MAX_ACTIVE_REQUESTS = 6
+const LISTENER_RESTART_DELAY_MS = 1_000
 
 class Request {
   raw
@@ -177,38 +186,90 @@ class HttpServerService {
   delete = (path, handler) => this.#routes.delete.set(path, handler)
   options = (path, handler) => this.#routes.options.set(path, handler)
 
+  #active = 0
+
   constructor(options = {}) {
-    this.#listen(options.port).catch((error) => {
-      trace(`[matchday] HTTP listener stopped: ${error}\n`)
-    })
+    this.#run(options.port)
+  }
+
+  async #run(port) {
+    // Listener-level errors (e.g. out of pcbs during a burst) reject the
+    // accept iterator; without a restart the server would stay dead until
+    // the next reboot.
+    for (;;) {
+      try {
+        await this.#listen(port)
+      } catch (error) {
+        trace(`[matchday] HTTP listener stopped: ${error}\n`)
+      }
+      await new Promise((resolve) => Timer.set(resolve, LISTENER_RESTART_DELAY_MS))
+      trace('[matchday] HTTP listener restarting\n')
+    }
   }
 
   async #listen(port) {
+    // Never await request handling here: one request whose body stalls (a
+    // phone that left WiFi mid-POST) or whose handler is slow (a spoken alert)
+    // must not stop every other client from being served.
     for await (const connection of listen({ port })) {
-      let context
-      let response
-
-      try {
-        context = new Context(connection.request)
-        const routes = this.#routes[context.req.method]
-        const handler = routes ? routes.get(context.req.path) : undefined
-        response = handler ? await handler(context) : context.text('Resource Not Found', 404)
-        if (!response) response = context.text('Empty Response', 500)
-      } catch (error) {
-        trace(`[matchday] HTTP handler failed: ${error}\n`)
-        response = context ? context.text('Internal Server Error', 500) : new Response('Internal Server Error', { status: 500 })
-      }
-
-      // Keep accepting queued requests while the response is written, but
-      // attach the rejection handler synchronously so a dropped phone/browser
-      // connection can never become an unhandled promise rejection.
-      connection.respondWith(response).catch((error) => {
-        trace(`[matchday] HTTP response closed: ${error}\n`)
-        try {
-          connection.close()
-        } catch (_closeError) {}
-      })
+      this.#serve(connection)
     }
+  }
+
+  #serve(connection) {
+    if (this.#active >= MAX_ACTIVE_REQUESTS) {
+      // respondWith would wait for the full request body, which a wedged peer
+      // never delivers; dropping the connection is the only safe shed.
+      try {
+        connection.close()
+      } catch (_closeError) {}
+      return
+    }
+    this.#active++
+
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      this.#active--
+      Timer.clear(watchdog)
+    }
+    const watchdog = Timer.set(() => {
+      if (settled) return
+      trace('[matchday] HTTP request timed out; closing connection\n')
+      // Closing rejects the listener's pending request/response promises, so
+      // the in-flight #handle chain settles through its rejection path.
+      try {
+        connection.close()
+      } catch (_closeError) {}
+      finish()
+    }, REQUEST_TIMEOUT_MS)
+
+    this.#handle(connection).then(finish, (error) => {
+      trace(`[matchday] HTTP response closed: ${error}\n`)
+      try {
+        connection.close()
+      } catch (_closeError) {}
+      finish()
+    })
+  }
+
+  async #handle(connection) {
+    let context
+    let response
+
+    try {
+      context = new Context(connection.request)
+      const routes = this.#routes[context.req.method]
+      const handler = routes ? routes.get(context.req.path) : undefined
+      response = handler ? await handler(context) : context.text('Resource Not Found', 404)
+      if (!response) response = context.text('Empty Response', 500)
+    } catch (error) {
+      trace(`[matchday] HTTP handler failed: ${error}\n`)
+      response = context ? context.text('Internal Server Error', 500) : new Response('Internal Server Error', { status: 500 })
+    }
+
+    await connection.respondWith(response)
   }
 }
 

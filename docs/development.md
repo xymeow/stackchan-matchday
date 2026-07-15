@@ -30,6 +30,12 @@ The Python suite covers watcher behavior, Match Setup, commentary contracts,
 and device-facing integration helpers. The Node suite exercises the mod web
 surface without installing it on hardware.
 
+Spoiler-protection changes should prove that Kalshi-derived alerts are
+suppressed while market state and passive displays keep updating, confirmed
+ESPN alerts remain eligible, queued market alerts are purged on hot enable,
+and a later disable does not replay accumulated movement. Cover watcher-local
+and device pending/ack paths, including the boolean `false` case.
+
 ## Build without installing
 
 Build a mod archive from the upstream Stack-chan `firmware/` directory:

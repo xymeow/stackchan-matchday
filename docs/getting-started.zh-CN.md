@@ -186,6 +186,7 @@ curl --request POST --data-binary "say 比赛日准备好了" \
 | 变更 | 通常需要更新 |
 | --- | --- |
 | watcher 文案、球员目录、解析和轮询 | watcher 代码与配置；重启 Python 进程 |
+| 防剧透手机开关 | watcher 与 Matchday Mod 1.6.0；无需重刷 host |
 | Mod 页面、设备动作、命令或资源 | 重新构建并安装 Mod |
 | `xs` 分区或 CJK host 字体 | 重新应用补丁并烧录 host |
 | macOS TTS 服务实现 | 重启 TTS 服务；不需要刷设备 |

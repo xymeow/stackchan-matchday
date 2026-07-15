@@ -4,6 +4,7 @@
   "stackchan_serial_port": "/dev/cu.usbmodem101",
   "stackchan_serial_baud": 115200,
   "language": "zh",
+  "spoiler_free_mode": false,
   "voice_transport": "clip",
   "mac_voice": {"zh": "Tingting", "en": "Samantha"},
   "mac_say_rate": 185,

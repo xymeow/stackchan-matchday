@@ -252,6 +252,7 @@ class ConfigLocalizationTests(unittest.TestCase):
 
         self.assertEqual(post.call_args.args[1]["language"], "en")
         self.assertEqual(post.call_args.args[1]["commentary_style"], "balanced")
+        self.assertFalse(post.call_args.args[1]["spoiler_free_mode"])
 
     def test_style_sync_is_lightweight_and_does_not_send_options(self):
         config = watcher.WatchConfig(
@@ -280,6 +281,52 @@ class ConfigLocalizationTests(unittest.TestCase):
             self.assertFalse(
                 watcher.sync_device_commentary_style(config, "professional")
             )
+
+    def test_spoiler_sync_uses_dedicated_endpoint_and_preserves_false(self):
+        config = watcher.WatchConfig(
+            stackchan_transport="http",
+            stackchan_host="192.0.2.1",
+        )
+
+        with patch.object(watcher, "post_json") as post:
+            synced = watcher.sync_device_spoiler_free_mode(config, False)
+
+        self.assertTrue(synced)
+        self.assertEqual(
+            post.call_args.args,
+            (
+                "http://192.0.2.1/api/match-setup/spoiler",
+                {"spoiler_free_mode": False},
+            ),
+        )
+        self.assertEqual(post.call_args.kwargs, {"timeout": 2})
+
+        with patch.object(
+            watcher,
+            "post_json",
+            side_effect=watcher.urllib.error.URLError("offline"),
+        ):
+            self.assertFalse(watcher.sync_device_spoiler_free_mode(config, True))
+
+    def test_spoiler_free_mode_defaults_loads_and_validates_boolean(self):
+        raw = self.localized_config()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            defaulted = watcher.load_config(path)
+            raw["spoiler_free_mode"] = True
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            enabled = watcher.load_config(path)
+            raw["spoiler_free_mode"] = "false"
+            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaisesRegex(
+                watcher.ConfigError,
+                "spoiler_free_mode must be a boolean",
+            ):
+                watcher.load_config(path)
+
+        self.assertFalse(defaulted.spoiler_free_mode)
+        self.assertTrue(enabled.spoiler_free_mode)
 
     def test_commentary_style_defaults_validates_and_propagates_to_markets(self):
         raw = self.localized_config()
@@ -327,6 +374,22 @@ class ConfigLocalizationTests(unittest.TestCase):
         self.assertEqual(config.espn.event_id, "760510")
         self.assertFalse(config.markets[0].alerts_enabled)
         self.assertEqual(config.markets[0].goal_signal_move_cents, 8)
+
+    def test_live_spoiler_update_mutates_only_global_preference(self):
+        config = watcher.WatchConfig(
+            espn=espn_config(),
+            markets=[watcher.MarketConfig("FRA", "法国晋级")],
+        )
+        espn_config_object = config.espn
+        market_config_object = config.markets[0]
+
+        enabled = watcher.apply_live_spoiler_free_mode(config, True)
+
+        self.assertTrue(enabled)
+        self.assertTrue(config.spoiler_free_mode)
+        self.assertIs(config.espn, espn_config_object)
+        self.assertIs(config.markets[0], market_config_object)
+        self.assertEqual(config.espn.event_id, "760510")
 
     def test_old_goal_signal_speeches_migrate_exact_team_facts(self):
         raw = {
@@ -405,6 +468,7 @@ class ESPNAlertTests(unittest.TestCase):
         self.assertEqual(alert.light_rgb, (0, 85, 164))
         self.assertEqual(alert.face, "happy")
         self.assertFalse(alert.prefer_dynamic_voice)
+        self.assertFalse(alert.spoiler_sensitive)
 
     def test_backed_team_loss_gets_loss_reaction_in_backed_team_color(self):
         item = {
@@ -2429,6 +2493,32 @@ class PersistentDisplayTests(unittest.TestCase):
 
 
 class MarketAlertTests(unittest.TestCase):
+    def test_spoiler_mode_keeps_summary_display_but_suppresses_summary_speech(self):
+        market = watcher.MarketConfig("FRA", "法国晋级")
+        config = watcher.WatchConfig(
+            markets=[market],
+            spoiler_free_mode=True,
+        )
+        snapshots = {
+            market.ticker: watcher.MarketSnapshot(
+                "FRA", "法国晋级", "active", "E", 69, 71, 29, 31, 70, "", None
+            )
+        }
+
+        with (
+            patch.object(watcher, "send_ticker") as send_ticker,
+            patch.object(watcher, "speak_text") as speak_text,
+        ):
+            watcher.send_summary(
+                config,
+                snapshots,
+                dry_run=False,
+                no_say=False,
+            )
+
+        send_ticker.assert_called_once_with(config, snapshots, dry_run=False)
+        speak_text.assert_not_called()
+
     def test_english_price_and_near_close_speech_use_singular_units(self):
         market = watcher.MarketConfig(
             "FRA",
@@ -2465,6 +2555,8 @@ class MarketAlertTests(unittest.TestCase):
         self.assertNotIn("1 minutes", near_close.speech)
         self.assertIn("midpoint is 1 cent", price_move.speech)
         self.assertIn("by 1 cent", price_move.speech)
+        self.assertTrue(near_close.spoiler_sensitive)
+        self.assertTrue(price_move.spoiler_sensitive)
 
     def test_default_english_goal_signal_contains_no_chinese(self):
         market = watcher.MarketConfig(
@@ -2491,6 +2583,140 @@ class MarketAlertTests(unittest.TestCase):
         signal = next(alert for alert in alerts if alert.kind == "market_goal_signal")
         self.assertFalse(contains_han(signal.balloon))
         self.assertFalse(contains_han(signal.speech))
+        self.assertTrue(signal.spoiler_sensitive)
+
+    def test_market_spread_alert_is_spoiler_sensitive_price_information(self):
+        market = watcher.MarketConfig(
+            "FRA",
+            "法国晋级",
+            spread_move_cents=4,
+            min_seconds_between_alerts=0,
+        )
+        snapshot = watcher.MarketSnapshot(
+            "FRA", "法国晋级", "active", "E", 45, 55, 45, 55, 50, "", None
+        )
+        state = watcher.MarketState(
+            last_alert_mid_cents=50,
+            last_observed_mid_cents=50,
+            last_yes_spread_cents=2,
+        )
+
+        alerts = watcher.evaluate_market(
+            snapshot,
+            market,
+            state,
+            datetime.now(timezone.utc),
+        )
+
+        spread = next(alert for alert in alerts if alert.kind == "spread_widen")
+        self.assertTrue(spread.spoiler_sensitive)
+
+    def test_market_status_change_is_spoiler_sensitive(self):
+        market = watcher.MarketConfig("FRA", "法国晋级")
+        snapshot = watcher.MarketSnapshot(
+            "FRA", "法国晋级", "closed", "E", 99, 100, 0, 1, 100, "", None
+        )
+        state = watcher.MarketState(last_status="active")
+
+        alerts = watcher.evaluate_market(
+            snapshot,
+            market,
+            state,
+            datetime.now(timezone.utc),
+        )
+
+        status = next(alert for alert in alerts if alert.kind == "status_change")
+        self.assertTrue(status.spoiler_sensitive)
+
+    def test_hot_enable_consumes_current_snapshot_before_the_next_poll(self):
+        now = datetime.now(timezone.utc)
+        market = watcher.MarketConfig(
+            "FRA",
+            "法国晋级",
+            near_close_minutes=10,
+        )
+        config = watcher.WatchConfig(markets=[market])
+        snapshot = watcher.MarketSnapshot(
+            "FRA",
+            "法国晋级",
+            "active",
+            "E",
+            69,
+            71,
+            29,
+            31,
+            70,
+            "",
+            now + timedelta(minutes=5),
+        )
+        state = watcher.MarketState(
+            last_alert_mid_cents=50,
+            last_observed_mid_cents=50,
+            last_yes_spread_cents=8,
+            last_status="open",
+        )
+
+        watcher.consume_spoiler_market_baselines(
+            config,
+            {market.ticker: snapshot},
+            {market.ticker: state},
+            now,
+        )
+
+        self.assertEqual(state.last_alert_mid_cents, 70)
+        self.assertEqual(state.last_observed_mid_cents, 70)
+        self.assertEqual(state.last_yes_spread_cents, 2)
+        self.assertEqual(state.last_status, "active")
+        self.assertTrue(state.near_close_alerted)
+
+    def test_spoiler_mode_suppresses_market_alert_and_consumes_baseline(self):
+        market = watcher.MarketConfig(
+            "FRA",
+            "法国晋级",
+            alert_move_cents=5,
+            speak_move_cents=5,
+            min_seconds_between_alerts=0,
+        )
+        now = datetime.now(timezone.utc)
+        state = watcher.MarketState(
+            last_alert_mid_cents=50,
+            last_observed_mid_cents=50,
+        )
+        protected_snapshot = watcher.MarketSnapshot(
+            "FRA", "法国晋级", "active", "E", 59, 61, 39, 41, 60, "", None
+        )
+
+        protected_alerts = watcher.evaluate_market(
+            protected_snapshot,
+            market,
+            state,
+            now,
+        )
+        visible_alerts = watcher.apply_spoiler_policy_to_market_alerts(
+            True,
+            protected_alerts,
+            protected_snapshot,
+            market,
+            state,
+            now,
+        )
+
+        self.assertEqual(visible_alerts, [])
+        self.assertEqual(state.last_alert_mid_cents, 60)
+        self.assertEqual(state.last_alert_at, now.timestamp())
+
+        # Disabling protection starts from the latest protected price, so the
+        # old 10-cent jump is not replayed as a catch-up alert.
+        next_snapshot = watcher.MarketSnapshot(
+            "FRA", "法国晋级", "active", "E", 60, 62, 38, 40, 61, "", None
+        )
+        after_disable = watcher.evaluate_market(
+            next_snapshot,
+            market,
+            state,
+            now + timedelta(seconds=1),
+        )
+        self.assertFalse(any(alert.kind == "price_move" for alert in after_disable))
 
     def test_market_price_move_uses_three_distinct_voice_styles(self):
         snapshot = watcher.MarketSnapshot(
@@ -2614,10 +2840,28 @@ class MarketAlertTests(unittest.TestCase):
                     self.assertIn(expected_team, signal.balloon)
                     self.assertTrue("疑似" in signal.speech or "可能" in signal.speech)
                     self.assertIn("确认", signal.speech)
-                    self.assertNotIn("进球了", signal.speech)
+                    self.assertNotIn(f"{expected_team}进球了", signal.speech)
+                    self.assertNotIn("确认进球", signal.speech)
+                    self.assertNotIn("已经进球", signal.speech)
                     self.assertIn("疑似", signal.balloon)
                     self.assertIn("等待确认", signal.balloon)
                     self.assertNotIn("仓位", signal.speech)
+                    if style == "casual":
+                        self.assertEqual(
+                            signal.speech,
+                            f"盘口突然{'拉升' if rising else '跳水'}！"
+                            f"{expected_team}这边很可能进球了！"
+                            "先别眨眼，等文字直播确认！",
+                        )
+                    elif style == "balanced":
+                        self.assertEqual(
+                            signal.speech,
+                            f"盘口突然{'拉升' if rising else '跳水'}！"
+                            f"{expected_team}这边很可能进球了！先等文字直播确认。",
+                        )
+                    else:
+                        self.assertIn("进球概率骤升", signal.speech)
+                        self.assertIn(f"至{midpoint}分", signal.speech)
 
     def test_suspected_goal_marks_support_position_conflict_conditionally(self):
         snapshot = watcher.MarketSnapshot(
@@ -2645,6 +2889,29 @@ class MarketAlertTests(unittest.TestCase):
         self.assertIn("仓位会受益", rising)
         self.assertIn("球迷这边开心", falling)
         self.assertIn("仓位却会承压", falling)
+
+    def test_casual_suspected_goal_uses_natural_aligned_support_position_context(self):
+        snapshot = watcher.MarketSnapshot(
+            "ENG", "英格兰晋级", "active", "E", 69, 71, 29, 31, 70, "", None
+        )
+        market = watcher.MarketConfig(
+            "ENG",
+            "英格兰晋级",
+            commentary_style="casual",
+            goal_signal_up_team="英格兰",
+            goal_signal_down_team="挪威",
+            favorite_team="英格兰",
+            position_team="英格兰",
+            tracks_position=True,
+        )
+
+        speech = watcher.speech_for_market_goal_signal(snapshot, market, True, 10, 70)
+
+        self.assertEqual(
+            speech,
+            "盘口突然拉升！英格兰这边很可能进球了！先别眨眼，等文字直播确认！"
+            "要是真的，咱们支持的球队和仓位都舒服了。",
+        )
 
     def test_unsafe_english_custom_goal_claim_is_replaced_with_uncertainty(self):
         market = watcher.MarketConfig(
@@ -2683,8 +2950,8 @@ class MarketAlertTests(unittest.TestCase):
         speech = watcher.speech_for_market_goal_signal(snapshot, market, True, 10, 60)
 
         self.assertNotIn("法国进球了", speech)
-        self.assertIn("法国疑似进球", speech)
-        self.assertIn("等待文字直播确认", speech)
+        self.assertIn("法国这边很可能进球了", speech)
+        self.assertIn("先等文字直播确认", speech)
 
     def test_inactive_market_freezes_last_trade_without_goal_signal(self):
         market = watcher.MarketConfig(
@@ -2788,6 +3055,52 @@ class MarketAlertTests(unittest.TestCase):
 
 
 class AlertDeliveryTests(unittest.TestCase):
+    def test_delivery_boundary_suppresses_spoiler_sensitive_alert(self):
+        config = watcher.WatchConfig(spoiler_free_mode=True)
+        alert = watcher.Alert(
+            ticker="FRA",
+            label="法国晋级",
+            kind="price_move",
+            priority=110,
+            face="happy",
+            balloon="盘口上涨",
+            speech="盘口上涨",
+            detail="YES mid 70c -> 80c",
+            spoiler_sensitive=True,
+        )
+
+        with patch.object(watcher, "send_stackchan_commands") as send:
+            delivered = watcher.send_alert(
+                config,
+                alert,
+                quiet=False,
+                dry_run=False,
+                no_say=False,
+            )
+
+        self.assertTrue(delivered)
+        send.assert_not_called()
+
+    def test_blocking_say_uses_the_long_speech_timeout(self):
+        with patch.object(watcher.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b""
+            watcher.post_stackchan_http_command("192.0.2.1", "say 一段完整的进球播报")
+
+        self.assertEqual(
+            urlopen.call_args.kwargs["timeout"],
+            watcher.STACKCHAN_SPEECH_TIMEOUT_SECONDS,
+        )
+
+    def test_routine_device_command_keeps_the_short_timeout(self):
+        with patch.object(watcher.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b""
+            watcher.post_stackchan_http_command("192.0.2.1", "face happy")
+
+        self.assertEqual(
+            urlopen.call_args.kwargs["timeout"],
+            watcher.STACKCHAN_COMMAND_TIMEOUT_SECONDS,
+        )
+
     def test_english_schedule_uses_natural_date_prepositions(self):
         starts_at = "2026-07-10T19:00:00+00:00"
         local_start = watcher.parse_datetime(starts_at).astimezone()
@@ -2827,7 +3140,7 @@ class AlertDeliveryTests(unittest.TestCase):
             "Position: France. Monitoring is active.",
         )
 
-    def test_feedback_idle_wait_tracks_motion_tts_and_light(self):
+    def test_feedback_idle_wait_tracks_motion_tts_and_light_at_safe_poll_rate(self):
         config = watcher.WatchConfig(stackchan_host="192.0.2.1")
         statuses = [
             {"celebrating": True, "tts": {"busy": False}, "light": {"on": True}},
@@ -2837,7 +3150,7 @@ class AlertDeliveryTests(unittest.TestCase):
         ]
 
         with patch.object(watcher, "http_json", side_effect=statuses) as fetch_status:
-            with patch.object(watcher.time, "sleep"):
+            with patch.object(watcher.time, "sleep") as sleep:
                 idle = watcher.wait_for_stackchan_feedback_idle(
                     config,
                     timeout=5,
@@ -2846,6 +3159,10 @@ class AlertDeliveryTests(unittest.TestCase):
 
         self.assertTrue(idle)
         self.assertEqual(fetch_status.call_count, 4)
+        self.assertEqual(
+            [entry.args[0] for entry in sleep.call_args_list],
+            [watcher.STACKCHAN_FEEDBACK_POLL_SECONDS] * 3,
+        )
 
     def test_pre_dispatch_idle_wait_does_not_block_on_persistent_light(self):
         config = watcher.WatchConfig(stackchan_host="192.0.2.1")
@@ -2907,7 +3224,7 @@ class AlertDeliveryTests(unittest.TestCase):
         self.assertIn("dry-run stackchan: balloon temp", output.getvalue())
         self.assertNotIn("setup show", output.getvalue())
 
-    def test_result_win_uses_atomic_voice_motion_and_light_command(self):
+    def test_result_win_sequences_motion_before_dynamic_voice(self):
         config = watcher.WatchConfig(
             voice_transport="clip",
             result_celebration_commands=True,
@@ -2931,10 +3248,11 @@ class AlertDeliveryTests(unittest.TestCase):
             watcher.send_alert(config, alert, quiet=False, dry_run=True, no_say=False)
 
         commands = output.getvalue()
-        self.assertIn(
-            "dry-run stackchan: celebrate result win 0 85 164 比赛结束。法国二比零摩洛哥。",
-            commands,
-        )
+        celebration = "dry-run stackchan: celebrate result win 0 85 164"
+        speech = "dry-run stackchan: say 比赛结束。法国二比零摩洛哥。"
+        self.assertIn(celebration, commands)
+        self.assertIn(speech, commands)
+        self.assertLess(commands.index(celebration), commands.index(speech))
         self.assertNotIn("light flash", commands)
         self.assertNotIn("clip favorite-win", commands)
 
@@ -3049,7 +3367,7 @@ class AlertDeliveryTests(unittest.TestCase):
         )
         self.assertNotIn("clip ", commands)
 
-    def test_personalized_goal_uses_atomic_voice_motion_and_light_command(self):
+    def test_personalized_goal_sequences_motion_before_dynamic_voice(self):
         config = watcher.WatchConfig(voice_transport="clip")
         alert = watcher.Alert(
             ticker="ESPN:760510",
@@ -3072,14 +3390,101 @@ class AlertDeliveryTests(unittest.TestCase):
 
         commands = output.getvalue()
         self.assertIn("dry-run stackchan: balloon temp 8000 进球测试", commands)
-        self.assertIn(
-            "dry-run stackchan: celebrate say 0 85 164 姆巴佩！姆巴佩！打进去了！",
-            commands,
-        )
-        self.assertNotIn("dry-run stackchan: celebrate goal", commands)
-        self.assertNotIn("dry-run stackchan: say ", commands)
+        celebration = "dry-run stackchan: celebrate goal 0 85 164"
+        speech = "dry-run stackchan: say 姆巴佩！姆巴佩！打进去了！"
+        self.assertIn(celebration, commands)
+        self.assertIn(speech, commands)
+        self.assertLess(commands.index(celebration), commands.index(speech))
+        self.assertNotIn("dry-run stackchan: celebrate say", commands)
         self.assertNotIn("light flash", commands)
         self.assertNotIn("clip favorite-goal", commands)
+
+    def test_personalized_goal_waits_for_motion_before_sending_dynamic_voice(self):
+        config = watcher.WatchConfig(voice_transport="clip")
+        alert = watcher.Alert(
+            ticker="ESPN:760510",
+            label="法国 vs 摩洛哥",
+            kind="espn_goal",
+            priority=200,
+            face="happy",
+            balloon="进球测试",
+            speech="姆巴佩破门，法国一比零领先。",
+            detail="test",
+            clip_id="favorite-goal",
+            light_rgb=(0, 85, 164),
+            celebration="goal",
+            prefer_dynamic_voice=True,
+        )
+        events = []
+
+        def record_send(_config, commands, dry_run=False):
+            events.append(("send", list(commands), dry_run))
+
+        def record_wait(
+            _config,
+            timeout=30,
+            *,
+            include_light=False,
+            report_last_error=False,
+        ):
+            events.append(("wait", include_light, report_last_error, timeout))
+            return True
+
+        with patch.object(watcher, "send_stackchan_commands", side_effect=record_send):
+            with patch.object(
+                watcher,
+                "wait_for_stackchan_feedback_idle",
+                side_effect=record_wait,
+            ):
+                delivered = watcher.send_alert(
+                    config,
+                    alert,
+                    quiet=False,
+                    dry_run=False,
+                    no_say=False,
+                )
+
+        self.assertTrue(delivered)
+        self.assertEqual(events[0], ("wait", False, False, 30))
+        self.assertIn("celebrate goal 0 85 164", events[1][1])
+        self.assertEqual(events[2], ("wait", False, True, 30))
+        self.assertEqual(events[3][1], ["say 姆巴佩破门，法国一比零领先。"])
+
+    def test_deferred_goal_tts_failure_does_not_replay_delivered_celebration(self):
+        config = watcher.WatchConfig(voice_transport="clip")
+        alert = watcher.Alert(
+            ticker="ESPN:760510",
+            label="法国 vs 摩洛哥",
+            kind="espn_goal",
+            priority=200,
+            face="happy",
+            balloon="进球测试",
+            speech="姆巴佩破门，法国一比零领先。",
+            detail="test",
+            clip_id="favorite-goal",
+            light_rgb=(0, 85, 164),
+            celebration="goal",
+            prefer_dynamic_voice=True,
+        )
+
+        with patch.object(
+            watcher,
+            "send_stackchan_commands",
+            side_effect=[None, OSError("tts link closed")],
+        ) as send:
+            with patch.object(watcher, "wait_for_stackchan_feedback_idle", return_value=True):
+                with redirect_stderr(io.StringIO()) as stderr:
+                    delivered = watcher.send_alert(
+                        config,
+                        alert,
+                        quiet=False,
+                        dry_run=False,
+                        no_say=False,
+                    )
+
+        self.assertTrue(delivered)
+        self.assertEqual(send.call_count, 2)
+        self.assertIn("deferred Stack-chan speech failed", stderr.getvalue())
 
     def test_generic_goal_keeps_local_clip_celebration(self):
         config = watcher.WatchConfig(voice_transport="clip")
@@ -3178,6 +3583,38 @@ class AdaptivePollingTests(unittest.TestCase):
 
 
 class AlertQueueTests(unittest.TestCase):
+    def test_enabling_spoiler_mode_purges_market_alerts_and_keeps_espn(self):
+        market = watcher.Alert(
+            ticker="FRA",
+            label="法国晋级",
+            kind="price_move",
+            priority=110,
+            face="happy",
+            balloon="盘口上涨",
+            speech="盘口上涨",
+            detail="YES mid 70c -> 80c",
+            spoiler_sensitive=True,
+        )
+        espn = watcher.Alert(
+            ticker="ESPN:760510",
+            label="法国 vs 摩洛哥",
+            kind="espn_goal",
+            priority=1000,
+            face="happy",
+            balloon="法国进球",
+            speech="姆巴佩进球",
+            detail="Goal! France.",
+        )
+        queue = watcher.merge_alert_queue(
+            [],
+            [(market, None, None, None), (espn, None, None, None)],
+            100.0,
+        )
+
+        protected = watcher.purge_spoiler_sensitive_alerts(queue)
+
+        self.assertEqual([item.alert.kind for item in protected], ["espn_goal"])
+
     def test_confirmed_goal_drops_unplayed_market_goal_signal(self):
         signal = watcher.Alert(
             ticker="FRA",

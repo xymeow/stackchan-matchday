@@ -24,6 +24,7 @@ REQUEST_TIMEOUT_SECONDS = 12
 DEFAULT_SETUP_PORT = 8788
 DEFAULT_COMMENTARY_STYLE = "balanced"
 COMMENTARY_STYLES = frozenset({"casual", "balanced", "professional"})
+DEFAULT_SPOILER_FREE_MODE = False
 
 
 def normalize_commentary_style(value: Any) -> str:
@@ -32,6 +33,20 @@ def normalize_commentary_style(value: Any) -> str:
         choices = ", ".join(sorted(COMMENTARY_STYLES))
         raise ValueError(f"espn.commentary_style must be one of: {choices}")
     return style
+
+
+def normalize_spoiler_free_mode(value: Any, *, path: str = "spoiler_free_mode") -> bool:
+    """Require a real JSON boolean instead of accepting truthy values."""
+
+    if type(value) is not bool:
+        raise ValueError(f"{path} must be a JSON boolean")
+    return value
+
+
+def configured_spoiler_free_mode(raw: dict[str, Any]) -> bool:
+    if "spoiler_free_mode" not in raw:
+        return DEFAULT_SPOILER_FREE_MODE
+    return normalize_spoiler_free_mode(raw["spoiler_free_mode"])
 
 
 TEAM_METADATA: dict[str, tuple[str, str, str]] = {
@@ -299,6 +314,7 @@ class MatchSetupService:
         self._config_mutation_lock = threading.RLock()
         self._reload_requested = threading.Event()
         self._commentary_style_update: str | None = None
+        self._spoiler_free_mode_update: bool | None = None
         self._upcoming_cache: list[dict[str, Any]] = []
         self._upcoming_cached_at = 0.0
         self._options_cache: list[dict[str, Any]] = []
@@ -317,6 +333,14 @@ class MatchSetupService:
             style = self._commentary_style_update
             self._commentary_style_update = None
         return style
+
+    def take_spoiler_free_mode_update(self) -> bool | None:
+        """Return a live anti-spoiler update without requesting a full reload."""
+
+        with self._lock:
+            spoiler_free_mode = self._spoiler_free_mode_update
+            self._spoiler_free_mode_update = None
+        return spoiler_free_mode
 
     def upcoming_matches(self, force: bool = False) -> list[dict[str, Any]]:
         with self._lock:
@@ -460,6 +484,7 @@ class MatchSetupService:
             "commentary_style": normalize_commentary_style(
                 espn.get("commentary_style", DEFAULT_COMMENTARY_STYLE)
             ),
+            "spoiler_free_mode": configured_spoiler_free_mode(raw),
             "kalshi_url": str((raw.get("setup_server") or {}).get("last_kalshi_url") or ""),
             "event_id": str(espn.get("event_id") or ""),
             "label": resolve_text(espn.get("label"), language, path="espn.label"),
@@ -516,8 +541,27 @@ class MatchSetupService:
         return {"ok": True, "commentary_style": style}
 
     @serialized_config_mutation
+    def apply_spoiler_free_mode(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist and signal an anti-spoiler-only update without reloading."""
+
+        if "spoiler_free_mode" not in payload:
+            raise ValueError("spoiler_free_mode is required")
+        spoiler_free_mode = normalize_spoiler_free_mode(payload["spoiler_free_mode"])
+        raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        raw["spoiler_free_mode"] = spoiler_free_mode
+        atomic_write_json(self.config_path, raw)
+        with self._lock:
+            self._spoiler_free_mode_update = spoiler_free_mode
+        return {"ok": True, "spoiler_free_mode": spoiler_free_mode}
+
+    @serialized_config_mutation
     def apply_selection(self, payload: dict[str, Any]) -> dict[str, Any]:
         language = normalize_language(payload.get("language", self.language), path="language")
+        requested_spoiler_free_mode = payload.get("spoiler_free_mode")
+        if "spoiler_free_mode" in payload:
+            requested_spoiler_free_mode = normalize_spoiler_free_mode(
+                requested_spoiler_free_mode
+            )
         requested_style = payload.get("commentary_style")
         commentary_style = (
             normalize_commentary_style(requested_style)
@@ -574,6 +618,12 @@ class MatchSetupService:
             )
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        spoiler_free_mode = (
+            requested_spoiler_free_mode
+            if "spoiler_free_mode" in payload
+            else configured_spoiler_free_mode(raw)
+        )
+        raw["spoiler_free_mode"] = spoiler_free_mode
         if not commentary_style:
             commentary_style = normalize_commentary_style(
                 (raw.get("espn") or {}).get("commentary_style", DEFAULT_COMMENTARY_STYLE)
@@ -650,24 +700,22 @@ class MatchSetupService:
                         "goal_signal_enabled": True,
                         "goal_signal_up_speech": localized_pair(
                             (
-                                f"{localized[index]}晋级盘口快速上行。"
-                                f"{localized[index]}进球的可能性上升，但目前仍属疑似，"
-                                "等待文字直播确认。"
+                                f"盘口突然拉升！{localized[index]}这边很可能进球了！"
+                                "先别眨眼，等文字直播确认！"
                             ),
                             (
-                                f"The {english[index]} advancement market moved sharply higher. "
-                                f"Possible goal for {english[index]}; awaiting commentary confirmation."
+                                f"The market just jumped! {english[index]} may have scored. "
+                                "Don't blink—waiting for commentary confirmation!"
                             ),
                         ),
                         "goal_signal_down_speech": localized_pair(
                             (
-                                f"{localized[index]}晋级盘口快速下挫。"
-                                f"{localized[opposing_index]}进球的可能性上升，但目前仍属疑似，"
-                                "等待文字直播确认。"
+                                f"盘口突然跳水！{localized[opposing_index]}这边很可能进球了！"
+                                "先别眨眼，等文字直播确认！"
                             ),
                             (
-                                f"The {english[index]} advancement market moved sharply lower. "
-                                f"Possible goal for {english[opposing_index]}; awaiting commentary confirmation."
+                                f"The market just dropped! {english[opposing_index]} may have scored. "
+                                "Don't blink—waiting for commentary confirmation!"
                             ),
                         ),
                         "goal_signal_up_team": localized_pair(
@@ -703,6 +751,7 @@ class MatchSetupService:
             "ok": True,
             "language": language,
             "commentary_style": commentary_style,
+            "spoiler_free_mode": spoiler_free_mode,
             "label": resolve_text(espn["label"], language, path="espn.label"),
             "label_i18n": {
                 lang: resolve_text(espn["label"], lang, path="espn.label")
@@ -724,6 +773,11 @@ class MatchSetupService:
         team flags nor a matching fixture.
         """
         language = normalize_language(payload.get("language", self.language), path="language")
+        requested_spoiler_free_mode = payload.get("spoiler_free_mode")
+        if "spoiler_free_mode" in payload:
+            requested_spoiler_free_mode = normalize_spoiler_free_mode(
+                requested_spoiler_free_mode
+            )
         requested_style = payload.get("commentary_style")
         commentary_style = (
             normalize_commentary_style(requested_style)
@@ -748,6 +802,12 @@ class MatchSetupService:
         event_title = str(event.get("title") or event.get("sub_title") or event_ticker)
 
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
+        spoiler_free_mode = (
+            requested_spoiler_free_mode
+            if "spoiler_free_mode" in payload
+            else configured_spoiler_free_mode(raw)
+        )
+        raw["spoiler_free_mode"] = spoiler_free_mode
         if not commentary_style:
             commentary_style = normalize_commentary_style(
                 (raw.get("espn") or {}).get("commentary_style", DEFAULT_COMMENTARY_STYLE)
@@ -806,6 +866,7 @@ class MatchSetupService:
             "ok": True,
             "language": language,
             "commentary_style": commentary_style,
+            "spoiler_free_mode": spoiler_free_mode,
             "label": event_title,
             "label_i18n": {lang: event_title for lang in SUPPORTED_LANGUAGES},
             "event_id": "",
@@ -868,6 +929,7 @@ def setup_page_html() -> str:
   <header><h1>Stack-chan 赛前设置</h1><div class="status" id="health">连接中</div></header>
   <section><h2>播报语言 / Commentary language</h2><div class="segment two" id="language"><label><input type="radio" name="language" value="zh" checked><span>中文</span></label><label><input type="radio" name="language" value="en"><span>English</span></label></div><div class="hint">选择比赛并点“开始看球”后生效</div></section>
   <section><h2>播报语气</h2><div class="segment" id="commentary-style"><label><input type="radio" name="commentary_style" value="casual"><span>朋友陪看</span></label><label><input type="radio" name="commentary_style" value="balanced" checked><span>自然播报</span></label><label><input type="radio" name="commentary_style" value="professional"><span>专业解说</span></label></div><div class="hint" id="style-effective">当前生效：自然播报</div><div class="hint">可在比赛中即时切换，不会重播旧事件</div></section>
+  <section><h2>防剧透模式</h2><div class="segment two" id="spoiler-free-mode"><label><input type="radio" name="spoiler_free_mode" value="false" checked><span>普通</span></label><label><input type="radio" name="spoiler_free_mode" value="true"><span>防剧透</span></label></div><div class="hint" id="spoiler-effective">当前生效：普通</div><div class="hint">防剧透会关闭所有 Kalshi 盘口主动消息，包括价格变化和疑似进球；ESPN 已确认事件照常播报，概率条与 ticker 仍会更新。</div></section>
   <section><h2>未来比赛</h2><div class="matches" id="matches"><div class="empty">正在读取赛程</div></div></section>
   <section>
     <h2>盘口与直播</h2>
@@ -885,11 +947,15 @@ def setup_page_html() -> str:
   <section><h2>当前监控</h2><div class="current" id="current">读取中</div></section>
 </main>
 <script>
-const state={selectedEventId:'',resolved:null};
+const state={selectedEventId:'',resolved:null,status:null};
 const $=id=>document.getElementById(id);
 const selectedStyle=()=>document.querySelector('input[name="commentary_style"]:checked')?.value||'balanced';
+const selectedSpoilerFreeMode=()=>document.querySelector('input[name="spoiler_free_mode"]:checked')?.value==='true';
 const styleNames={casual:'朋友陪看',balanced:'自然播报',professional:'专业解说'};
+const spoilerModeName=enabled=>enabled?'防剧透':'普通';
 function showEffectiveStyle(style){$('style-effective').textContent=`当前生效：${styleNames[style]||styleNames.balanced}`}
+function showEffectiveSpoilerMode(enabled){$('spoiler-effective').textContent=`当前生效：${spoilerModeName(enabled)}`}
+function renderCurrent(){const status=state.status;if(!status)return;const settings=`${styleNames[status.commentary_style]||styleNames.balanced} · ${spoilerModeName(status.spoiler_free_mode===true)}`;$('current').textContent=status.label?`${status.label} · 支持 ${status.favorite_team||'中立'} · 持仓 ${status.position_team||'无'} · ${settings}`:`尚未配置 · ${settings}`}
 const localTime=value=>new Intl.DateTimeFormat('zh-CN',{weekday:'short',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(value));
 function setMessage(text,kind=''){const el=$('message');el.textContent=text;el.className='message '+kind}
 function renderMatches(matches){
@@ -903,14 +969,15 @@ function renderResolved(data){state.resolved=data;const english=document.querySe
 async function json(url,options){const response=await fetch(url,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'请求失败');return data}
 async function resolveKalshi(){setMessage('正在解析盘口和比赛');try{const data=await json('/api/setup/resolve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value})});renderResolved(data);setMessage('已匹配双方盘口','ok')}catch(error){setMessage(error.message,'error')}}
 async function chooseMatch(match){state.selectedEventId=match.event_id;document.querySelectorAll('.match').forEach(el=>el.classList.toggle('selected',el.dataset.id===match.event_id));if(match.kalshi_event_ticker){$('kalshi').value=match.kalshi_event_ticker;await resolveKalshi()}else if(state.resolved){selectRecommendedEspn()}}
-async function refreshEffectiveStyle(){try{const status=await json('/api/setup/status');const style=status.commentary_style||'balanced';const input=document.querySelector(`input[name="commentary_style"][value="${style}"]`);if(input)input.checked=true;showEffectiveStyle(style)}catch(_error){}}
-async function boot(){try{const [status,upcoming]=await Promise.all([json('/api/setup/status'),json('/api/setup/upcoming')]);$('health').textContent='watcher 在线';$('kalshi').value=status.kalshi_url||'';const language=status.language==='en'?'en':'zh';const input=document.querySelector(`input[name="language"][value="${language}"]`);if(input)input.checked=true;const style=status.commentary_style||'balanced';const styleInput=document.querySelector(`input[name="commentary_style"][value="${style}"]`);if(styleInput)styleInput.checked=true;showEffectiveStyle(style);$('current').textContent=status.label?`${status.label} · 支持 ${status.favorite_team||'中立'} · 持仓 ${status.position_team||'无'} · ${selectedStyle()}`:'尚未配置';renderMatches(upcoming.matches)}catch(error){$('health').textContent='连接失败';setMessage(error.message,'error')}}
+async function refreshEffectiveSettings(){try{const status=await json('/api/setup/status');state.status=status;const style=status.commentary_style||'balanced';const styleInput=document.querySelector(`input[name="commentary_style"][value="${style}"]`);if(styleInput)styleInput.checked=true;const spoilerFreeMode=status.spoiler_free_mode===true;const spoilerInput=document.querySelector(`input[name="spoiler_free_mode"][value="${spoilerFreeMode}"]`);if(spoilerInput)spoilerInput.checked=true;showEffectiveStyle(style);showEffectiveSpoilerMode(spoilerFreeMode);renderCurrent()}catch(_error){}}
+async function boot(){try{const [status,upcoming]=await Promise.all([json('/api/setup/status'),json('/api/setup/upcoming')]);state.status=status;$('health').textContent='watcher 在线';$('kalshi').value=status.kalshi_url||'';const language=status.language==='en'?'en':'zh';const input=document.querySelector(`input[name="language"][value="${language}"]`);if(input)input.checked=true;const style=status.commentary_style||'balanced';const styleInput=document.querySelector(`input[name="commentary_style"][value="${style}"]`);if(styleInput)styleInput.checked=true;const spoilerFreeMode=status.spoiler_free_mode===true;const spoilerInput=document.querySelector(`input[name="spoiler_free_mode"][value="${spoilerFreeMode}"]`);if(spoilerInput)spoilerInput.checked=true;showEffectiveStyle(style);showEffectiveSpoilerMode(spoilerFreeMode);renderCurrent();renderMatches(upcoming.matches)}catch(error){$('health').textContent='连接失败';setMessage(error.message,'error')}}
 $('resolve').onclick=resolveKalshi;
 document.querySelectorAll('input[name="language"]').forEach(input=>{input.onchange=()=>{if(state.resolved)renderResolved(state.resolved)}});
-document.querySelectorAll('input[name="commentary_style"]').forEach(input=>{input.onchange=async()=>{try{const data=await json('/api/setup/style',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commentary_style:selectedStyle()})});showEffectiveStyle(data.commentary_style);setMessage(`播报语气已切换为 ${data.commentary_style}`,'ok')}catch(error){setMessage(error.message,'error')}}});
-$('apply').onclick=async()=>{const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';const language=document.querySelector('input[name="language"]:checked')?.value||'zh';const commentary_style=selectedStyle();setMessage('正在切换 watcher');try{const data=await json('/api/setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value,event_ticker:state.resolved.event_ticker,espn_event_id:$('espn').value,favorite_team:favorite,position_team:position,language,commentary_style})});setMessage(`${data.label} 已开始监控`,'ok');$('current').textContent=`${data.label} · 支持 ${favorite||'中立'} · 持仓 ${position||'无'} · ${data.commentary_style}`}catch(error){setMessage(error.message,'error')}};
+document.querySelectorAll('input[name="commentary_style"]').forEach(input=>{input.onchange=async()=>{try{const data=await json('/api/setup/style',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({commentary_style:selectedStyle()})});showEffectiveStyle(data.commentary_style);if(state.status){state.status.commentary_style=data.commentary_style;renderCurrent()}setMessage(`播报语气已切换为 ${styleNames[data.commentary_style]||data.commentary_style}`,'ok')}catch(error){setMessage(error.message,'error')}}});
+document.querySelectorAll('input[name="spoiler_free_mode"]').forEach(input=>{input.onchange=async()=>{try{const data=await json('/api/setup/spoiler',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({spoiler_free_mode:selectedSpoilerFreeMode()})});showEffectiveSpoilerMode(data.spoiler_free_mode);if(state.status){state.status.spoiler_free_mode=data.spoiler_free_mode;renderCurrent()}setMessage(`已切换为${spoilerModeName(data.spoiler_free_mode)}模式`,'ok')}catch(error){setMessage(error.message,'error')}}});
+$('apply').onclick=async()=>{const favorite=document.querySelector('input[name="favorite_team"]:checked')?.value||'';const position=document.querySelector('input[name="position_team"]:checked')?.value||'';const language=document.querySelector('input[name="language"]:checked')?.value||'zh';const commentary_style=selectedStyle();const spoiler_free_mode=selectedSpoilerFreeMode();setMessage('正在切换 watcher');try{const data=await json('/api/setup/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kalshi_url:$('kalshi').value,event_ticker:state.resolved.event_ticker,espn_event_id:$('espn').value,favorite_team:favorite,position_team:position,language,commentary_style,spoiler_free_mode})});state.status={...state.status,...data,favorite_team:favorite,position_team:position};showEffectiveSpoilerMode(data.spoiler_free_mode);renderCurrent();setMessage(`${data.label} 已开始监控`,'ok')}catch(error){setMessage(error.message,'error')}};
 boot();
-setInterval(refreshEffectiveStyle,5000);
+setInterval(refreshEffectiveSettings,5000);
 </script>
 </body>
 </html>"""
@@ -978,6 +1045,9 @@ class SetupRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/setup/style":
                 self._json(self.service.apply_commentary_style(payload))
+                return
+            if path == "/api/setup/spoiler":
+                self._json(self.service.apply_spoiler_free_mode(payload))
                 return
             self._json({"error": "not found"}, 404)
         except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as error:

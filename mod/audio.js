@@ -21,6 +21,12 @@ const TTS_DOMAIN = 'tts'
 const TTS_DEFAULT_PORT = 8787
 const TTS_SAMPLE_RATE = 24000
 const TTS_VOLUME = 0.7
+// 600ms (the host default) is not enough headroom: XS busy bursts while
+// speaking starve the streamer, and every excursion past the buffer is an
+// audible mid-sentence dropout. The LAN TTS server delivers the whole WAV far
+// faster than realtime, so a deeper buffer costs memory (~72KB at 24kHz) but
+// no perceptible start latency.
+const TTS_BUFFER_MS = 1500
 
 // Tone patterns per named reaction: [hz, ms] pairs played in order.
 const TONE_CLIPS = new Map([
@@ -107,13 +113,27 @@ function ensureRemoteTts() {
   if (!target.host) return undefined
   const key = `${target.host}:${target.port}`
   if (remoteTts === undefined || remoteTtsKey !== key) {
-    const { TTS } = Modules.importNow('tts-remote')
-    remoteTts = new TTS({
-      host: target.host,
-      port: target.port,
-      sampleRate: TTS_SAMPLE_RATE,
-      volume: TTS_VOLUME,
-    })
+    try {
+      const { RemoteTTS } = Modules.importNow('matchday/tts-remote-safe')
+      remoteTts = new RemoteTTS({
+        host: target.host,
+        port: target.port,
+        sampleRate: TTS_SAMPLE_RATE,
+        volume: TTS_VOLUME,
+        bufferDuration: TTS_BUFFER_MS,
+      })
+    } catch (error) {
+      // Host without the audio modules the vendored streamer needs: keep the
+      // pre-1.6 behavior and let the host's own tts-remote decide.
+      trace(`[matchday] vendored tts unavailable (${error}); using host tts-remote\n`)
+      const { TTS } = Modules.importNow('tts-remote')
+      remoteTts = new TTS({
+        host: target.host,
+        port: target.port,
+        sampleRate: TTS_SAMPLE_RATE,
+        volume: TTS_VOLUME,
+      })
+    }
     remoteTtsKey = key
   }
   return remoteTts
