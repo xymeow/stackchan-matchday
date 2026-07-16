@@ -240,6 +240,14 @@ def event_markets(payload: dict[str, Any]) -> tuple[dict[str, Any], list[dict[st
     event = payload.get("event") or {}
     markets = event.get("markets") or payload.get("markets") or []
     parsed = [market for market in markets if isinstance(market, dict) and market.get("ticker")]
+    # A tournament-winner event (e.g. KXMENWORLDCUP) lists every team as its own
+    # market. Once the bracket is down to the final, the eliminated teams settle
+    # and only the two finalists stay "active" — that is the two-way market we
+    # want, so narrow to the live markets before requiring exactly two.
+    if len(parsed) > 2:
+        active = [market for market in parsed if str(market.get("status") or "").lower() == "active"]
+        if len(active) == 2:
+            parsed = active
     if len(parsed) != 2:
         raise ValueError("目前只支持恰好包含两个互斥球队盘口的淘汰赛事件")
     teams = [market_team_name(market) for market in parsed]
