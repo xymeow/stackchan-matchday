@@ -8,8 +8,10 @@ building the Matchday mod, starting the watcher, and optionally enabling LAN
 speech.
 
 Already running Matchday? Read the version-specific
-[1.6.0](releases/1.6.0.md), [1.5.0](releases/1.5.0.md), and
-[1.4.0](releases/1.4.0.md) notes before rebuilding. Spoiler protection on the
+[1.7.0](releases/1.7.0.md), [1.6.0](releases/1.6.0.md),
+[1.5.0](releases/1.5.0.md), and
+[1.4.0](releases/1.4.0.md) notes before rebuilding. The 1.7.0 multi-venue
+aggregation is a watcher-only update. Spoiler protection on the
 device phone page requires both the 1.6.0 watcher and mod, but not a host
 reflash. The 1.5.0 support/position wording and global player catalog remain
 watcher-only updates.
