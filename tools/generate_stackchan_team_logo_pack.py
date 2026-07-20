@@ -40,8 +40,11 @@ def main() -> int:
     if not magick:
         raise RuntimeError("ImageMagick 'magick' is required")
     config = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    width = int(config.get("width") or 22)
-    height = int(config.get("height") or 18)
+    # Must match the device's FLAG_WIDTH x FLAG_HEIGHT (24x20): the flag skin
+    # samples exactly that region, and an undersized texture reads out of
+    # bounds and renders as garbage bars.
+    width = int(config.get("width") or 24)
+    height = int(config.get("height") or 20)
     inner_width = int(config.get("inner_width") or width)
     inner_height = int(config.get("inner_height") or height)
     template = str(config.get("source_template") or "")

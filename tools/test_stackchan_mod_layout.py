@@ -54,11 +54,14 @@ class ModLayoutTests(unittest.TestCase):
 
     def test_team_logo_pack_ships_probability_bar_sized_logos(self):
         # Team logos ride the flag mechanism (flag-<code>.png), so they must
-        # match the flag footprint exactly and keep their alpha channel.
+        # match the device FLAG_WIDTH x FLAG_HEIGHT exactly — the skin samples
+        # that full region and an undersized texture renders garbage bars.
+        self.assertIn("FLAG_WIDTH = 24", STATE_SOURCE)
+        self.assertIn("FLAG_HEIGHT = 20", STATE_SOURCE)
         for code in ("mlb-lad", "mlb-phi", "mlb-nyy", "mlb-pit"):
             image = (ROOT / "mod" / "assets" / "flags" / f"flag-{code}.png").read_bytes()
             self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
-            self.assertEqual(struct.unpack(">II", image[16:24]), (22, 18))
+            self.assertEqual(struct.unpack(">II", image[16:24]), (24, 20))
             self.assertEqual(image[24:26], bytes((8, 6)))  # 8-bit RGBA
 
     def test_setup_qr_uses_the_generated_texture_dimensions(self):
