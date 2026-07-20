@@ -18,8 +18,10 @@
   ESPN player catalog, and the cross-venue pairing registry
   (`pairing_registry.json`, agent-proposed and human-confirmed).
 - `docs/` — versioned user, API, development, product, and release guides.
-- `agent-skills/` — repo-local agent skills; `market-pairing` fetches
-  Kalshi/Polymarket/ESPN candidates and proposes pairing-registry entries.
+- `agent-skills/` — repo-local agent skills. `market-pairing` discovers and
+  recommends fixtures across Kalshi/Polymarket/ESPN and proposes
+  pairing-registry entries; `player-catalog-builder` fetches ESPN rosters and
+  drafts player-catalog skeletons for human-confirmed Chinese names.
 
 ## Test suites
 

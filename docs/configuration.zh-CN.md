@@ -232,6 +232,27 @@ watcher 还可每天提醒扫码选比赛：
 数据时退化为等权平均）。两平台分歧达到 8 分时，Stack-chan 会用信息性话术
 播报"平台分歧"；Kalshi 的疑似得分信号如果在 90 秒内被 Polymarket 同向跳动
 佐证，会升级为"双平台确认"的高置信播报。Polymarket 拉取失败时概率条静默
-退化为 Kalshi 单源，只记日志不报错。跨平台配对由 market-pairing 助手写入
-`config/pairing_registry.json` 提议，经你确认后才会被消费；适配器契约见
+退化为 Kalshi 单源，只记日志不报错。适配器契约见
 [venue-adapter-api.zh-CN.md](venue-adapter-api.zh-CN.md)。
+
+### 配对注册表（推荐入口）
+
+以上 venue 映射不必手写。market-pairing 助手会把跨平台配对提议写入
+`config/pairing_registry.json`（`confirmed: false`），你确认某条后把
+watchlist 指向它即可：
+
+```json
+{
+  "language": "zh",
+  "active_canonical_event": "mlb-2026-07-20-LAD-PHI"
+}
+```
+
+watcher 启动时从已确认的条目派生全部盘口配置：两个市场（主队开启提醒与
+疑似得分信号，另一侧静默镜像）、`normalized_outcomes` 概率条（含队色、
+旗帜与 Polymarket 映射）、开赛时间（驱动自适应轮询）。足球品类的条目还会
+自动接通 ESPN 逐字解说；其他品类在对应品类适配器落地前保持纯盘口陪看。
+启动时 watcher 会对照两个平台校验条目：Kalshi 市场缺失或已结算只告警；
+Polymarket 市场对不上则丢弃该映射、概率条退化单源，绝不崩溃。未确认的
+条目会被明确拒绝——确认动作永远属于人。手写 `markets` 与
+`active_canonical_event` 同时存在时，注册表派生优先并在日志中提示。
