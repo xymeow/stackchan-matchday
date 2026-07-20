@@ -59,8 +59,8 @@
       "pairing": {
         "proposed_by": "agent",
         "confidence": 0.98,
-        "evidence": "队名一致（LAD/PHI 缩写 vs 全名）；开赛时间一致（Kalshi ticker 19:10 ET，ESPN 23:00Z，±10min）；两平台报价一致（LAD 44.5% vs 44.5%）；均为单场胜负盘、两路结果",
-        "confirmed": false
+        "evidence": "队名一致（LAD/PHI 缩写 vs 全名）；开赛时间一致（Kalshi ticker 19:10 ET，ESPN 23:00Z，±10min）；两平台报价一致（LAD 44.5% vs 44.5%）；均为单场胜负盘、两路结果；用户已确认（2026-07-19）",
+        "confirmed": true
       }
     },
     {
