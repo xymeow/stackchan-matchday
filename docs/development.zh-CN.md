@@ -13,7 +13,7 @@
 | `host/` | CoreS3 分区补丁、可选 CJK 字体补丁与准备脚本 | 修改上游 runtime JS/C 源码 |
 | `config/` | 示例 watcher 配置、旗帜定义、全局球员目录、跨平台配对注册表 | 运行时秘密或真实账户信息 |
 | `docs/` | 版本化安装、配置、接口、PRD 和升级说明 | 环境相关且易变的排障记录 |
-| `agent-skills/` | 仓库内 agent 技能（market-pairing 配对提议） | watcher 运行时依赖 |
+| `agent-skills/` | 仓库内 agent 技能（market-pairing 发现与配对提议、player-catalog-builder 球员目录扩充） | watcher 运行时依赖 |
 
 构建参数、分区偏移、接口和配置行为必须保存在仓库文档并随代码评审。GitHub Wiki
 适合 xsbug、mDNS、防火墙和串口抓日志等环境经验，但不应成为版本绑定事实的唯一来源。
