@@ -73,7 +73,7 @@ class VenueAdapter(Protocol):
 - `same_direction_jump(delta_a, delta_b, min_abs)`：多源确认信号——
   两个平台同向、各自超过阈值的同时跳动，是 goal signal 的高置信升级。
 
-## watcher 集成点（P2 现状）
+## watcher 集成点（P2/P3 现状）
 
 - `probability_bar.polymarket`（配置）把概率条的左右两路映射到一个
   Gamma market；watcher 每 `polymarket.poll_seconds`（默认 30s，下限
@@ -83,5 +83,11 @@ class VenueAdapter(Protocol):
 - 分歧 ≥8 分产出 `venue_divergence` 信息性提醒（10 分钟冷却）；
   Kalshi goal signal 在 90 秒窗口内被 Polymarket 同向跳动佐证时，
   升级为"双平台确认"话术与更高优先级。
-- 运行时零 LLM 依赖；配对注册表（`config/pairing_registry.json`）由
-  market-pairing skill 离线提议、人工确认，watcher P3 起消费。
+- 配对注册表（`config/pairing_registry.json`）由 market-pairing skill
+  离线提议、人工确认；watchlist 用 `active_canonical_event` 指向一条
+  `confirmed: true` 的条目后，watcher 在 `load_config` 内派生全部盘口
+  配置（两个市场、概率条、Polymarket 映射、开赛时间；足球品类附带
+  ESPN 解说接线）。启动校验通过 `metadata()` 对照两个平台：Kalshi 市场
+  缺失/已结算仅告警，Polymarket 对不上则丢映射降级单源；未确认条目
+  直接拒绝，热重载遇到坏配置保留旧配置继续运行。
+- 运行时零 LLM 依赖：agent 只在开发机上提议配对，比赛期间不在任何路径。

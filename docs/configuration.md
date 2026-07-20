@@ -226,11 +226,35 @@ When the venues disagree by 8 points or more, Stack-chan reads out an
 informational "venues disagree" note, and a Kalshi suspected-goal signal that
 Polymarket confirms within 90 seconds is upgraded to a dual-venue,
 high-confidence callout. If Polymarket is unreachable the bar silently falls
-back to Kalshi alone. Cross-venue pairings are proposed into
-`config/pairing_registry.json` by the market-pairing helper and only ever
-consumed after you confirm them; see
+back to Kalshi alone. See
 [venue-adapter-api.zh-CN.md](venue-adapter-api.zh-CN.md) for the adapter
 contract.
+
+### Pairing registry (recommended entry point)
+
+The venue mapping above does not need to be hand-written. The market-pairing
+helper proposes cross-venue pairings into `config/pairing_registry.json`
+(`confirmed: false`); once you confirm an entry, point the watchlist at it:
+
+```json
+{
+  "language": "en",
+  "active_canonical_event": "mlb-2026-07-20-LAD-PHI"
+}
+```
+
+At startup the watcher derives the whole market setup from the confirmed
+entry: both markets (alerts and the suspected-score signal on the primary
+side, a silent mirror on the other), the `normalized_outcomes` bar with team
+colors, flags, and the Polymarket mapping, and the start time that drives
+adaptive polling. Soccer entries also wire up ESPN commentary automatically;
+other categories stay market-only until their category adapter lands. The
+watcher validates the entry against both venues at startup: a missing or
+settled Kalshi market only warns, an inconsistent Polymarket market drops
+that mapping and degrades the bar to single-venue — it never crashes.
+Unconfirmed entries are rejected outright: confirmation always belongs to a
+human. When both a manual `markets` list and `active_canonical_event` are
+present, the registry derivation wins and a note is logged.
 
 ## HTTP and serial transport
 

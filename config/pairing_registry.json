@@ -3,9 +3,35 @@
     {
       "id": "mlb-2026-07-20-LAD-PHI",
       "category": "mlb",
-      "label": { "zh": "道奇 vs 费城人", "en": "Dodgers vs Phillies" },
+      "label": {
+        "zh": "道奇 vs 费城人",
+        "en": "Dodgers vs Phillies"
+      },
       "starts_at": "2026-07-20T23:10:00+00:00",
-      "outcomes": ["LAD", "PHI"],
+      "outcomes": [
+        "LAD",
+        "PHI"
+      ],
+      "outcome_labels": {
+        "LAD": {
+          "zh": "道奇",
+          "en": "Dodgers"
+        },
+        "PHI": {
+          "zh": "费城人",
+          "en": "Phillies"
+        }
+      },
+      "display": {
+        "LAD": {
+          "flag": "us",
+          "color": "#005A9C"
+        },
+        "PHI": {
+          "flag": "us",
+          "color": "#E81828"
+        }
+      },
       "event_source": {
         "provider": "espn",
         "league": "baseball/mlb",
@@ -40,9 +66,35 @@
     {
       "id": "mlb-2026-07-21-LAD-PHI",
       "category": "mlb",
-      "label": { "zh": "道奇 vs 费城人（第二场）", "en": "Dodgers vs Phillies (game 2)" },
+      "label": {
+        "zh": "道奇 vs 费城人（第二场）",
+        "en": "Dodgers vs Phillies (game 2)"
+      },
       "starts_at": "2026-07-21T22:40:00+00:00",
-      "outcomes": ["LAD", "PHI"],
+      "outcomes": [
+        "LAD",
+        "PHI"
+      ],
+      "outcome_labels": {
+        "LAD": {
+          "zh": "道奇",
+          "en": "Dodgers"
+        },
+        "PHI": {
+          "zh": "费城人",
+          "en": "Phillies"
+        }
+      },
+      "display": {
+        "LAD": {
+          "flag": "us",
+          "color": "#005A9C"
+        },
+        "PHI": {
+          "flag": "us",
+          "color": "#E81828"
+        }
+      },
       "event_source": {
         "provider": "espn",
         "league": "baseball/mlb",
@@ -77,9 +129,35 @@
     {
       "id": "mlb-2026-07-20-NYY-PIT",
       "category": "mlb",
-      "label": { "zh": "海盗 vs 扬基", "en": "Pirates vs Yankees" },
+      "label": {
+        "zh": "海盗 vs 扬基",
+        "en": "Pirates vs Yankees"
+      },
       "starts_at": "2026-07-20T23:05:00+00:00",
-      "outcomes": ["PIT", "NYY"],
+      "outcomes": [
+        "PIT",
+        "NYY"
+      ],
+      "outcome_labels": {
+        "PIT": {
+          "zh": "海盗",
+          "en": "Pirates"
+        },
+        "NYY": {
+          "zh": "扬基",
+          "en": "Yankees"
+        }
+      },
+      "display": {
+        "PIT": {
+          "flag": "us",
+          "color": "#FDB827"
+        },
+        "NYY": {
+          "flag": "us",
+          "color": "#0C2340"
+        }
+      },
       "event_source": {
         "provider": "espn",
         "league": "baseball/mlb",

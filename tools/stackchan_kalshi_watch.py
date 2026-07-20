@@ -289,6 +289,10 @@ class WatchConfig:
     adaptive_polling: AdaptivePollingConfig = field(default_factory=AdaptivePollingConfig)
     espn: ESPNConfig = field(default_factory=ESPNConfig)
     markets: list[MarketConfig] = field(default_factory=list)
+    # P3: watch a confirmed pairing-registry entry instead of hand-written
+    # markets. Empty string keeps the legacy hand-configured path.
+    active_canonical_event: str = ""
+    pairing_registry_path: str = ""
     dynamic_voice_commands: bool = True
     result_celebration_commands: bool = True
     result_speech_commands: bool = True
@@ -813,10 +817,10 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
             )
         )
 
-    if not markets:
+    if not markets and not str(raw.get("active_canonical_event", "")).strip():
         raise ConfigError("config must include at least one market")
 
-    return WatchConfig(
+    config = WatchConfig(
         language=language,
         stackchan_host=str(raw.get("stackchan_host", DEFAULT_STACKCHAN_HOST)).strip(),
         stackchan_transport=str(raw.get("stackchan_transport", DEFAULT_STACKCHAN_TRANSPORT)).strip().lower(),
@@ -848,7 +852,248 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         adaptive_polling=adaptive_polling,
         espn=espn,
         markets=markets,
+        active_canonical_event=str(raw.get("active_canonical_event", "")).strip(),
+        pairing_registry_path=str(raw.get("pairing_registry_path", "")).strip(),
     )
+    if config.active_canonical_event:
+        registry_path = Path(config.pairing_registry_path or "pairing_registry.json")
+        if not registry_path.is_absolute():
+            registry_path = path.parent / registry_path
+        apply_pairing_registry(
+            config,
+            registry_path,
+            bar_explicitly_disabled=bar_raw.get("enabled") is False,
+        )
+    return config
+
+
+def load_pairing_registry(path: Path) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise ConfigError(f"pairing registry not found: {path}") from error
+    except json.JSONDecodeError as error:
+        raise ConfigError(f"invalid JSON pairing registry {path}: {error}") from error
+    entries = payload.get("canonical_events")
+    if not isinstance(entries, list):
+        raise ConfigError(f"{path}: canonical_events must be an array")
+    return entries
+
+
+def apply_pairing_registry(
+    config: WatchConfig,
+    registry_path: Path,
+    *,
+    bar_explicitly_disabled: bool = False,
+) -> None:
+    """Derive markets and the probability bar from one confirmed registry entry.
+
+    The registry is written by the market-pairing skill and confirmed by a
+    human; the watcher never invents pairings (PRD section 4.3). Derivation
+    assumes a two-outcome winner market pair — top_n multi-outcome display
+    arrives with P5.
+    """
+    event_id = config.active_canonical_event
+    entries = load_pairing_registry(registry_path)
+    entry = next(
+        (item for item in entries if str(item.get("id", "")) == event_id),
+        None,
+    )
+    if entry is None:
+        raise ConfigError(
+            f"active_canonical_event {event_id!r} not found in {registry_path}"
+        )
+    pairing = entry.get("pairing") or {}
+    if pairing.get("confirmed") is not True:
+        raise ConfigError(
+            f"registry entry {event_id!r} is not confirmed yet; review the pairing "
+            "and set pairing.confirmed=true before watching it"
+        )
+    outcomes = entry.get("outcomes")
+    if not isinstance(outcomes, list) or len(outcomes) != 2:
+        raise ConfigError(
+            f"registry entry {event_id!r}: watcher derivation supports exactly two "
+            "outcomes until multi-outcome display lands (P5)"
+        )
+    left_outcome, right_outcome = (str(name) for name in outcomes)
+
+    venue_markets = entry.get("venue_markets") or []
+    kalshi_market = next(
+        (item for item in venue_markets if item.get("venue") == "kalshi"), None
+    )
+    if kalshi_market is None:
+        raise ConfigError(f"registry entry {event_id!r} has no kalshi venue market")
+    kalshi_map = kalshi_market.get("outcome_map") or {}
+    if set(kalshi_map) != {left_outcome, right_outcome}:
+        raise ConfigError(
+            f"registry entry {event_id!r}: kalshi outcome_map keys must match outcomes"
+        )
+    polymarket_market = next(
+        (item for item in venue_markets if item.get("venue") == "polymarket"), None
+    )
+    polymarket_map: dict[str, str] = {}
+    if polymarket_market is not None:
+        polymarket_map = polymarket_market.get("outcome_map") or {}
+        if set(polymarket_map) != {left_outcome, right_outcome}:
+            raise ConfigError(
+                f"registry entry {event_id!r}: polymarket outcome_map keys must "
+                "match outcomes"
+            )
+        if not str(polymarket_market.get("market_id", "")).strip():
+            raise ConfigError(
+                f"registry entry {event_id!r}: polymarket venue market needs market_id"
+            )
+
+    language = config.language
+    outcome_labels = entry.get("outcome_labels") or {}
+    display = entry.get("display") or {}
+
+    def outcome_name(outcome: str) -> str:
+        return _config_text(
+            outcome_labels.get(outcome),
+            language,
+            path=f"registry[{event_id}].outcome_labels[{outcome}]",
+            fallback=outcome,
+        )
+
+    def market_for(outcome: str, other: str, primary: bool) -> MarketConfig:
+        name = outcome_name(outcome)
+        return MarketConfig(
+            ticker=str(kalshi_map[outcome]).strip().upper(),
+            label=pick(language, f"{name}获胜", f"{name} to win"),
+            side_i_care="yes",
+            spread_move_cents=99,
+            alerts_enabled=primary,
+            show_in_ticker=primary,
+            goal_signal_enabled=primary,
+            goal_signal_up_team=name,
+            goal_signal_down_team=outcome_name(other),
+            language=language,
+            commentary_style=config.espn.commentary_style,
+        )
+
+    if config.markets:
+        print(
+            f"note: active_canonical_event {event_id!r} overrides the configured "
+            "markets list",
+            file=sys.stderr,
+        )
+    config.markets = [
+        market_for(left_outcome, right_outcome, primary=True),
+        market_for(right_outcome, left_outcome, primary=False),
+    ]
+
+    bar = config.probability_bar
+    # The bar is the whole point of a paired watch; only an explicit
+    # "enabled": false in the watchlist keeps it off.
+    bar.enabled = not bar_explicitly_disabled
+    bar.mode = "normalized_outcomes"
+    bar.market_ticker = config.markets[0].ticker
+    bar.right_market_ticker = config.markets[1].ticker
+    bar.side = "yes"
+    left_display = display.get(left_outcome) or {}
+    right_display = display.get(right_outcome) or {}
+    bar.left_flag = str(left_display.get("flag", bar.left_flag)).strip().lower()
+    bar.left_color = str(left_display.get("color", bar.left_color)).strip()
+    bar.right_flag = str(right_display.get("flag", bar.right_flag)).strip().lower()
+    bar.right_color = str(right_display.get("color", bar.right_color)).strip()
+    if polymarket_market is not None:
+        bar.polymarket_market_id = str(polymarket_market.get("market_id", "")).strip()
+        bar.polymarket_left_outcome = str(polymarket_map[left_outcome])
+        bar.polymarket_right_outcome = str(polymarket_map[right_outcome])
+    else:
+        bar.polymarket_market_id = ""
+        bar.polymarket_left_outcome = ""
+        bar.polymarket_right_outcome = ""
+
+    entry_label = _config_text(
+        entry.get("label"),
+        language,
+        path=f"registry[{event_id}].label",
+        fallback=event_id,
+    )
+    starts_at = str(entry.get("starts_at", "")).strip()
+    event_source = entry.get("event_source") or {}
+    league = str(event_source.get("league", ""))
+    if (
+        str(event_source.get("provider", "")) == "espn"
+        and league.startswith("soccer/")
+        and str(event_source.get("event_id", "")).strip()
+    ):
+        config.espn.enabled = True
+        config.espn.event_id = str(event_source["event_id"]).strip()
+        config.espn.league = league.removeprefix("soccer/")
+        config.espn.label = entry_label
+        config.espn.starts_at = starts_at
+    else:
+        # Non-soccer categories run market-only until their category adapter
+        # lands (P4); the start time still feeds adaptive polling.
+        config.espn.starts_at = starts_at
+        if not config.espn.enabled:
+            config.espn.label = entry_label
+
+
+def validate_registry_venues(config: WatchConfig) -> list[str]:
+    """Best-effort startup check of a registry-derived setup against venues.
+
+    Returns human-readable warnings. Failures degrade instead of crashing:
+    an unusable polymarket mapping is dropped so the bar keeps running on
+    Kalshi alone; missing or settled Kalshi markets only warn because the
+    watch loop already reports missing tickers every poll.
+    """
+    warnings: list[str] = []
+    if not config.active_canonical_event:
+        return warnings
+    kalshi = KalshiVenueAdapter(config.kalshi_base_url, fetch=http_json)
+    for market in config.markets:
+        try:
+            meta = kalshi.metadata(market.ticker)
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+            warnings.append(
+                f"registry check: could not fetch kalshi market {market.ticker}; "
+                "continuing without startup validation"
+            )
+            continue
+        if meta is None:
+            warnings.append(
+                f"registry check: kalshi market {market.ticker} not found"
+            )
+        elif meta.status == "settled":
+            warnings.append(
+                f"registry check: kalshi market {market.ticker} is already settled"
+            )
+    bar = config.probability_bar
+    if bar.polymarket_market_id:
+        polymarket = PolymarketVenueAdapter(config.polymarket.base_url, fetch=http_json)
+        try:
+            meta = polymarket.metadata(bar.polymarket_market_id)
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, ValueError):
+            warnings.append(
+                "registry check: could not fetch polymarket market "
+                f"{bar.polymarket_market_id}; keeping the mapping"
+            )
+            meta = None
+        else:
+            if meta is None:
+                warnings.append(
+                    f"registry check: polymarket market {bar.polymarket_market_id} "
+                    "not found; dropping the polymarket mapping"
+                )
+                bar.polymarket_market_id = ""
+            else:
+                gamma_outcomes = {name.casefold() for name in meta.outcomes}
+                mapped = {
+                    bar.polymarket_left_outcome.casefold(),
+                    bar.polymarket_right_outcome.casefold(),
+                }
+                if not mapped.issubset(gamma_outcomes):
+                    warnings.append(
+                        "registry check: polymarket outcome labels do not match "
+                        f"market {bar.polymarket_market_id} ({sorted(meta.outcomes)}); "
+                        "dropping the polymarket mapping"
+                    )
+                    bar.polymarket_market_id = ""
+    return warnings
 
 
 def validate_config(config: WatchConfig, dry_run: bool = False) -> None:
@@ -5372,6 +5617,9 @@ def run_watch(args: argparse.Namespace) -> int:
     config_path = Path(args.config)
     config = load_config(config_path, args.language or None)
     validate_config(config, dry_run=args.dry_run)
+    if not args.dry_run:
+        for warning in validate_registry_venues(config):
+            print(f"warning: {warning}", file=sys.stderr)
     if not args.dry_run and config.voice_transport == "clip":
         try:
             config.dynamic_voice_commands, mod_version, mod_name = detect_dynamic_voice_commands(config)
@@ -5535,8 +5783,21 @@ def run_watch(args: argparse.Namespace) -> int:
                 previous_result_commands = config.result_celebration_commands
                 previous_result_speech_commands = config.result_speech_commands
                 previous_setup_commands = config.setup_qr_commands
-                config = load_config(config_path)
-                validate_config(config, dry_run=args.dry_run)
+                try:
+                    reloaded = load_config(config_path)
+                    validate_config(reloaded, dry_run=args.dry_run)
+                except ConfigError as error:
+                    # A bad edit (typoed registry pointer, unconfirmed entry)
+                    # must not kill a running watch; keep the old config.
+                    print(
+                        f"warning: reload rejected, keeping previous config: {error}",
+                        file=sys.stderr,
+                    )
+                    continue
+                config = reloaded
+                if not args.dry_run:
+                    for warning in validate_registry_venues(config):
+                        print(f"warning: {warning}", file=sys.stderr)
                 config.dynamic_voice_commands = previous_dynamic_voice
                 config.result_celebration_commands = previous_result_commands
                 config.result_speech_commands = previous_result_speech_commands
