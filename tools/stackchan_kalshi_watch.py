@@ -202,7 +202,7 @@ class PolymarketConfig:
 @dataclass
 class SetupServerConfig:
     enabled: bool = False
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = DEFAULT_SETUP_PORT
     public_base_url: str = ""
     kalshi_series_ticker: str = "KXWCADVANCE"
@@ -627,9 +627,12 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
     setup_raw = raw.get("setup_server") or {}
     if not isinstance(setup_raw, dict):
         raise ConfigError("setup_server must be an object")
+    setup_host = str(setup_raw.get("host", "127.0.0.1")).strip() or "127.0.0.1"
+    if ":" in setup_host:
+        raise ConfigError("setup_server.host must be an IPv4 address or hostname")
     setup_server = SetupServerConfig(
         enabled=bool(setup_raw.get("enabled", False)),
-        host=str(setup_raw.get("host", "0.0.0.0")).strip(),
+        host=setup_host,
         port=max(1, min(65535, int(setup_raw.get("port", DEFAULT_SETUP_PORT)))),
         public_base_url=str(setup_raw.get("public_base_url", "")).strip().rstrip("/"),
         kalshi_series_ticker=str(
@@ -4702,6 +4705,9 @@ def detect_dynamic_voice_commands(config: WatchConfig) -> tuple[bool, str, str]:
 def advertised_setup_url(config: WatchConfig) -> str:
     if config.setup_server.public_base_url:
         return f"{config.setup_server.public_base_url}/setup"
+    bind_host = config.setup_server.host.strip() or "127.0.0.1"
+    if bind_host != "0.0.0.0":
+        return f"http://{bind_host}:{config.setup_server.port}/setup"
     host = ""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:

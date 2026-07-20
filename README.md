@@ -62,6 +62,26 @@ See [Configuration and operation](docs/configuration.md) for daily prompts,
 language, support and position behavior, commentary styles, mute controls, and
 standalone-market details.
 
+## System design
+
+![Stack-chan Matchday system design](docs/images/system-design.png)
+
+Kalshi and ESPN are read-only inputs to the Python watcher. The watcher
+discovers fixtures, validates market pairing, parses events into shared facts,
+renders the selected commentary style, and sends options, acknowledgements,
+display, speech, and reaction commands to the Matchday mod.
+
+The mod hosts the phone setup page, forwards pending settings, and plays the
+resulting commands. Commentary styling does not modify the official host
+firmware or TTS module. Optional speech uses a LAN `/say?text=...` service that
+returns a 24 kHz mono 16-bit PCM WAV response.
+
+The device stores a pending phone selection until the watcher validates it,
+atomically updates the local JSON configuration, hot-reloads, and acknowledges
+the device. The phone, watcher, TTS server, and Stack-chan must remain on the
+same trusted LAN; the watcher-hosted `:8788/setup` page is a local fallback,
+not the primary QR flow.
+
 ## Features
 
 - Persistent two-team probability bar, flags, and a bottom market ticker.
@@ -74,11 +94,15 @@ standalone-market details.
 - Optional spoiler protection suppresses proactive Kalshi alerts while
   confirmed ESPN events and passive probability/ticker updates continue.
 - Phone-based match setup with live Chinese/English switching and hot reload.
+- Automatic fixture discovery, adaptive polling, quiet hours, and standalone
+  market tracking when no match is available.
 - Optional LAN TTS; visual feedback and tone patterns still work without it.
+- A global ESPN athlete-ID catalog with manually verified Chinese names and
+  nicknames.
 
 ## Quick start
 
-### Already installed
+### Daily start
 
 Update the repository and restart the watcher. Support/position wording,
 position-based market selection, and the global player catalog remain
@@ -86,9 +110,6 @@ watcher-only changes. The phone spoiler-protection switch requires Matchday
 Mod 1.6.0, but the official host can stay in place.
 
 ```sh
-export MATCHDAY_DIR="$HOME/src/stackchan-matchday"
-cd "$MATCHDAY_DIR"
-git pull
 python3 tools/stackchan_kalshi_watch.py \
   --config config/kalshi_watchlist.json --watch
 ```
@@ -112,32 +133,14 @@ revision, one-time host preparation, QR generation, mod installation, watcher
 configuration, TTS, and verification. Host partition and optional CJK-font
 patch details live in [host/README.md](host/README.md).
 
-After installation, starting the watcher normally requires only:
+### Upgrade
 
-```sh
-python3 tools/stackchan_kalshi_watch.py \
-  --config config/kalshi_watchlist.json --watch
-```
-
-## System design
-
-![Stack-chan Matchday system design](docs/images/system-design.png)
-
-Kalshi and ESPN are read-only inputs to the Python watcher. The watcher
-discovers fixtures, validates market pairing, parses events into shared facts,
-renders the selected commentary style, and sends options, acknowledgements,
-display, speech, and reaction commands to the Matchday mod.
-
-The mod hosts the phone setup page, forwards pending settings, and plays the
-resulting commands. Commentary styling does not modify the official host
-firmware or TTS module. Optional speech uses a LAN `/say?text=...` service that
-returns a 24 kHz mono 16-bit PCM WAV response.
-
-The device stores a pending phone selection until the watcher validates it,
-atomically updates the local JSON configuration, hot-reloads, and acknowledges
-the device. The phone, watcher, TTS server, and Stack-chan must remain on the
-same trusted LAN; the watcher-hosted `:8788/setup` page is a local fallback,
-not the primary QR flow.
+Before updating, open the [release notes directory](docs/releases/) and check
+which boundary changed: watcher, Matchday mod, or official host. Preserve the
+local watcher configuration and update only the affected layer. Watcher-only
+changes normally need a repository update and watcher restart, while mod or
+host changes must follow the version-specific build and flash instructions.
+The currently documented device release is [Matchday Mod 1.5.0](docs/releases/1.5.0.md).
 
 ## Documentation
 

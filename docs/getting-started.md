@@ -81,7 +81,13 @@ file "$MATCHDAY_DIR/mod/assets/setup/setup-qr.png"
 
 If `file` reports an edge larger than 168 px, regenerate with `-s 3`.
 
+Changing `stackchan_host` or the URL shown elsewhere does not rewrite this
+compiled PNG. If the device address changes, regenerate the QR and reinstall
+the mod.
+
 ## 4. Build and install the mod
+
+### Debug-protocol installation
 
 From the upstream `firmware/` directory:
 
@@ -95,10 +101,15 @@ npm run mod --target=esp32:./platforms/m5stackchan_cores3 -- -f rgb565be \
 
 `npm run mod` installs over the xsbug debug protocol. It needs an xsbug
 listener and may stall mid-write if the device is busy; a killed or stalled
-write leaves the mod unavailable until it is reinstalled. A debugger-free
-alternative is to build only and write the archive directly to `xs`:
+write leaves the mod unavailable until it is reinstalled.
+
+### Preferred without a debugger: write directly to `xs`
+
+When no debugger is needed, prefer building the archive and writing it
+directly to `xs` for a deterministic installation path:
 
 ```sh
+cd "$STACKCHAN_DIR/firmware"
 mcrun -d -m -p esp32:./platforms/m5stackchan_cores3 -t build -f rgb565be \
   "$MATCHDAY_DIR/mod/manifest.json"
 python3 -m esptool --chip esp32s3 --before default-reset --after hard-reset \
@@ -106,7 +117,9 @@ python3 -m esptool --chip esp32s3 --before default-reset --after hard-reset \
 ```
 
 `0xDF0000` is the `xs` partition offset created by the host patch. esptool
-verifies the write; the host mounts the archive after the following reset.
+verifies the write; the host mounts the archive after the following reset. Do
+not use this offset with other hardware or host builds unless their partition
+table is confirmed to match.
 
 Verify the device from the watcher computer:
 
@@ -184,7 +197,9 @@ selection moves from pending to acknowledged while the watcher is running.
 Preserve the watcher output and status response before restarting or
 reflashing anything.
 
-Use the [GitHub Wiki](https://github.com/xymeow/stackchan-matchday/wiki) for
-symptom-first checks covering networking, setup, QR, TTS, CJK text, markets,
-and debugger freezes. This versioned guide remains the canonical reference for
-commands and partition-dependent values.
+Use [Troubleshooting](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting)
+for symptom-first checks covering networking, setup, QR, TTS, CJK text, and
+markets. For xsbug freezes, interrupted installs, and device recovery, use
+[Debugging and recovery](https://github.com/xymeow/stackchan-matchday/wiki/Debugging-and-recovery).
+This versioned guide remains the canonical reference for commands and
+partition-dependent values.

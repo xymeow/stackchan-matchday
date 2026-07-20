@@ -96,9 +96,9 @@ npm run mod --target=esp32:./platforms/m5stackchan_cores3 -- -f rgb565be \
 CoreS3 必须使用 `-f rgb565be`，否则旗帜颜色会发生字节序错位。`npm run mod` 通过
 xsbug 调试协议安装，需要 xsbug 正在监听；设备忙时可能在写入中途卡住。
 
-### 推荐：直接写入 `xs` 分区
+### 无需调试器时优先：直接写入 `xs` 分区
 
-不需要调试器时，先构建归档，再由 esptool 直接写入分区：
+不需要调试器、希望安装路径更确定时，优先构建归档，再由 esptool 直接写入分区：
 
 ```sh
 cd "$STACKCHAN_DIR/firmware"
@@ -121,7 +121,7 @@ curl "http://$STACKCHAN_HOST/api/status"
 ```
 
 两者都应返回成功响应。若失败，请先确认设备已连入同一局域网，再查
-[排障与 FAQ](https://github.com/xymeow/stackchan-matchday/wiki)。
+[常见问题与排障](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting)。
 
 ## 5. 配置并启动 watcher
 
@@ -193,3 +193,12 @@ curl --request POST --data-binary "say 比赛日准备好了" \
 
 具体版本可能跨越多个边界。以对应的[版本说明](releases/)为准，不要仅根据版本号猜测
 是否需要刷机。
+
+## 验收与现场排障
+
+用 `/health` 和 `/api/status` 验收 Mod，再确认 watcher 运行时手机选择能从等待处理变为
+已确认。网络、设置、二维码、TTS、中文和盘口问题请查
+[常见问题与排障](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting)；
+xsbug 卡死、安装中断和设备恢复请查
+[调试与恢复](https://github.com/xymeow/stackchan-matchday/wiki/Debugging-and-recovery)。
+命令和分区相关数值仍以本版本化文档为准。
