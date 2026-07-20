@@ -59,16 +59,22 @@ def main() -> int:
         target = flags_dir / f"flag-{code}.png"
         with tempfile.NamedTemporaryFile(suffix=".png") as raw:
             download(url, Path(raw.name))
+            # Opaque white tiles on purpose, matching the country-flag format
+            # (PNG24, no alpha): the device compiles low-color art into 2-bit
+            # palette bitmaps, and palettized textures with an alpha channel
+            # render blank on the CoreS3. Verified on device 2026-07-20.
             subprocess.run(
                 [
                     magick,
                     Path(raw.name).as_posix(),
-                    "-background", "none",
+                    "-background", "white",
                     "-resize", f"{inner_width}x{inner_height}",
                     "-gravity", "center",
                     "-extent", f"{width}x{height}",
+                    "-alpha", "remove",
+                    "-alpha", "off",
                     "-strip",
-                    f"PNG32:{target}",
+                    f"PNG24:{target}",
                 ],
                 check=True,
             )

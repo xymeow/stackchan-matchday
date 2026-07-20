@@ -56,13 +56,16 @@ class ModLayoutTests(unittest.TestCase):
         # Team logos ride the flag mechanism (flag-<code>.png), so they must
         # match the device FLAG_WIDTH x FLAG_HEIGHT exactly — the skin samples
         # that full region and an undersized texture renders garbage bars.
+        # They must also stay opaque PNG24 like the country flags: low-color
+        # art compiles into palettized bitmaps, and palette-plus-alpha
+        # textures render blank on the device.
         self.assertIn("FLAG_WIDTH = 24", STATE_SOURCE)
         self.assertIn("FLAG_HEIGHT = 20", STATE_SOURCE)
         for code in ("mlb-lad", "mlb-phi", "mlb-nyy", "mlb-pit"):
             image = (ROOT / "mod" / "assets" / "flags" / f"flag-{code}.png").read_bytes()
             self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
             self.assertEqual(struct.unpack(">II", image[16:24]), (24, 20))
-            self.assertEqual(image[24:26], bytes((8, 6)))  # 8-bit RGBA
+            self.assertEqual(image[24:26], bytes((8, 2)))  # 8-bit opaque RGB
 
     def test_setup_qr_uses_the_generated_texture_dimensions(self):
         body = UI_SOURCE.split("function createSetupQrEffect", 1)[1].split(
