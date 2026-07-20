@@ -120,7 +120,8 @@ python3 tools/stackchan_kalshi_watch.py \
 
 示例 ticker 是占位值；从手机设置页选择真实比赛后，watcher 会校验 ESPN 与 Kalshi
 的双方匹配并原子更新配置。旧版升级前请查看
-[Matchday Mod 1.6.0 说明](docs/releases/1.6.0.md)及[全部版本说明](docs/releases/)；
+[Matchday Mod 1.7.0 多盘口说明](docs/releases/1.7.0.md)、
+[1.6.0 说明](docs/releases/1.6.0.md)及[全部版本说明](docs/releases/)；
 设备手机页的防剧透开关需要更新 watcher 与 Mod，但无需重刷官方 host。
 日常启动不需要 `git pull`、重新克隆或刷机。需要语音时，再启动
 [安装与升级](docs/getting-started.zh-CN.md)中说明的可选局域网 TTS 服务。
@@ -156,6 +157,7 @@ watcher。完整、可复现的命令见[安装与升级](docs/getting-started.z
 | 调用设备命令、状态与 Match Setup 接口 | [设备 API](docs/device-api.zh-CN.md) |
 | 运行测试、构建归档和回放比赛 | [开发指南](docs/development.zh-CN.md) |
 | 理解三档语气的产品规则 | [播报语气 PRD](docs/commentary-styles-prd.md) |
+| 多品类、多盘口的演进方向 | [多品类·多盘口 PRD](docs/multi-venue-roadmap-prd.zh-CN.md)、[VenueAdapter 契约](docs/venue-adapter-api.zh-CN.md) |
 | 查看版本差异与升级边界 | [版本说明](docs/releases/) |
 | 处理联网、二维码、TTS、xsbug 等常见问题 | [排障与 FAQ（Wiki）](https://github.com/xymeow/stackchan-matchday/wiki/Troubleshooting) |
 

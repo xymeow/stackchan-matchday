@@ -9,12 +9,17 @@
 - `host/` — required CoreS3 partition patch, optional CJK-font patch, and font
   preparation helper. These are build/resource changes; upstream runtime JS/C
   source remains unchanged.
-- `tools/` — watcher, local setup service, macOS TTS server, replay tool,
-  serial helper, asset generator, and tests. Default HTTP needs only Python's
-  standard library; serial transport additionally needs `pyserial`.
-- `config/` — example watcher configuration, flag-pack definition, and global
-  ESPN player catalog.
+- `tools/` — watcher, venue adapters (`stackchan_venues.py`: Kalshi +
+  Polymarket normalized quotes and aggregation), local setup service, macOS
+  TTS server, replay tool, serial helper, asset generator, and tests. Default
+  HTTP needs only Python's standard library; serial transport additionally
+  needs `pyserial`.
+- `config/` — example watcher configuration, flag-pack definition, global
+  ESPN player catalog, and the cross-venue pairing registry
+  (`pairing_registry.json`, agent-proposed and human-confirmed).
 - `docs/` — versioned user, API, development, product, and release guides.
+- `agent-skills/` — repo-local agent skills; `market-pairing` fetches
+  Kalshi/Polymarket/ESPN candidates and proposes pairing-registry entries.
 
 ## Test suites
 

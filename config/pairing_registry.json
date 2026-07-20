@@ -1,0 +1,115 @@
+{
+  "canonical_events": [
+    {
+      "id": "mlb-2026-07-20-LAD-PHI",
+      "category": "mlb",
+      "label": { "zh": "道奇 vs 费城人", "en": "Dodgers vs Phillies" },
+      "starts_at": "2026-07-20T23:10:00+00:00",
+      "outcomes": ["LAD", "PHI"],
+      "event_source": {
+        "provider": "espn",
+        "league": "baseball/mlb",
+        "event_id": "401816187"
+      },
+      "venue_markets": [
+        {
+          "venue": "kalshi",
+          "event_ticker": "KXMLBGAME-26JUL201910LADPHI",
+          "outcome_map": {
+            "LAD": "KXMLBGAME-26JUL201910LADPHI-LAD",
+            "PHI": "KXMLBGAME-26JUL201910LADPHI-PHI"
+          }
+        },
+        {
+          "venue": "polymarket",
+          "event_id": "702860",
+          "market_id": "2922141",
+          "outcome_map": {
+            "LAD": "Los Angeles Dodgers",
+            "PHI": "Philadelphia Phillies"
+          }
+        }
+      ],
+      "pairing": {
+        "proposed_by": "agent",
+        "confidence": 0.98,
+        "evidence": "队名一致（LAD/PHI 缩写 vs 全名）；开赛时间一致（Kalshi ticker 19:10 ET，ESPN 23:00Z，±10min）；两平台报价一致（LAD 44.5% vs 44.5%）；均为单场胜负盘、两路结果",
+        "confirmed": false
+      }
+    },
+    {
+      "id": "mlb-2026-07-21-LAD-PHI",
+      "category": "mlb",
+      "label": { "zh": "道奇 vs 费城人（第二场）", "en": "Dodgers vs Phillies (game 2)" },
+      "starts_at": "2026-07-21T22:40:00+00:00",
+      "outcomes": ["LAD", "PHI"],
+      "event_source": {
+        "provider": "espn",
+        "league": "baseball/mlb",
+        "event_id": "401816202"
+      },
+      "venue_markets": [
+        {
+          "venue": "kalshi",
+          "event_ticker": "KXMLBGAME-26JUL211840LADPHI",
+          "outcome_map": {
+            "LAD": "KXMLBGAME-26JUL211840LADPHI-LAD",
+            "PHI": "KXMLBGAME-26JUL211840LADPHI-PHI"
+          }
+        },
+        {
+          "venue": "polymarket",
+          "event_id": "706490",
+          "market_id": "2934540",
+          "outcome_map": {
+            "LAD": "Los Angeles Dodgers",
+            "PHI": "Philadelphia Phillies"
+          }
+        }
+      ],
+      "pairing": {
+        "proposed_by": "agent",
+        "confidence": 0.95,
+        "evidence": "同系列次日场；队名一致；Kalshi ticker 18:40 ET 与 ESPN 22:40Z 一致；胜负盘对胜负盘（slug mlb-lad-phi-2026-07-21 → event 706490 / market 2934540）",
+        "confirmed": false
+      }
+    },
+    {
+      "id": "mlb-2026-07-20-NYY-PIT",
+      "category": "mlb",
+      "label": { "zh": "海盗 vs 扬基", "en": "Pirates vs Yankees" },
+      "starts_at": "2026-07-20T23:05:00+00:00",
+      "outcomes": ["PIT", "NYY"],
+      "event_source": {
+        "provider": "espn",
+        "league": "baseball/mlb",
+        "event_id": "401816189"
+      },
+      "venue_markets": [
+        {
+          "venue": "kalshi",
+          "event_ticker": "KXMLBGAME-26JUL201905PITNYY",
+          "outcome_map": {
+            "PIT": "KXMLBGAME-26JUL201905PITNYY-PIT",
+            "NYY": "KXMLBGAME-26JUL201905PITNYY-NYY"
+          }
+        },
+        {
+          "venue": "polymarket",
+          "event_id": "702857",
+          "market_id": "2922135",
+          "outcome_map": {
+            "PIT": "Pittsburgh Pirates",
+            "NYY": "New York Yankees"
+          }
+        }
+      ],
+      "pairing": {
+        "proposed_by": "agent",
+        "confidence": 0.97,
+        "evidence": "队名一致；开赛时间一致（19:05 ET / 23:05Z）；两平台报价一致（NYY 53.5% vs 53.5%）；胜负盘对胜负盘",
+        "confirmed": false
+      }
+    }
+  ]
+}

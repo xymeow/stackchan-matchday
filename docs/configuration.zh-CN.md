@@ -204,3 +204,34 @@ watcher 还可每天提醒扫码选比赛：
 没有比赛时，可在设备设置页粘贴 Kalshi event URL 或 ticker。watcher 会选择该事件
 中成交最活跃的最多四个市场，在底部 ticker 中显示；比赛专属旗帜概率条和 ESPN
 播报暂时关闭。重新选择比赛后恢复比赛模式。
+
+## 多盘口源聚合（Kalshi + Polymarket）
+
+概率条可以把同一场比赛的两路结果在 Kalshi 与 Polymarket（只读 Gamma API，
+两边都不需要 API key）之间聚合。把概率条左右两侧映射到一个 Gamma market：
+
+```json
+{
+  "polymarket": {"enabled": true, "poll_seconds": 30},
+  "probability_bar": {
+    "enabled": true,
+    "mode": "normalized_outcomes",
+    "market_ticker": "KXMLBGAME-26JUL201910LADPHI-LAD",
+    "right_market_ticker": "KXMLBGAME-26JUL201910LADPHI-PHI",
+    "polymarket": {
+      "market_id": "2922141",
+      "left_outcome": "Los Angeles Dodgers",
+      "right_outcome": "Philadelphia Phillies"
+    }
+  }
+}
+```
+
+`market_id` 是 Gamma 的数字市场 id，outcome 字符串必须与该市场 `outcomes`
+标签逐字一致。概率条随后显示两平台的 liquidity 加权 mid（某一侧没有流动性
+数据时退化为等权平均）。两平台分歧达到 8 分时，Stack-chan 会用信息性话术
+播报"平台分歧"；Kalshi 的疑似得分信号如果在 90 秒内被 Polymarket 同向跳动
+佐证，会升级为"双平台确认"的高置信播报。Polymarket 拉取失败时概率条静默
+退化为 Kalshi 单源，只记日志不报错。跨平台配对由 market-pairing 助手写入
+`config/pairing_registry.json` 提议，经你确认后才会被消费；适配器契约见
+[venue-adapter-api.zh-CN.md](venue-adapter-api.zh-CN.md)。

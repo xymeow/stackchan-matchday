@@ -199,6 +199,42 @@ Setup. The event's four most-traded markets appear in the bottom ticker.
 Fixture-only flags, probability bar, and ESPN commentary are disabled until a
 matched fixture is selected again.
 
+## Multi-venue aggregation (Kalshi + Polymarket)
+
+The probability bar can aggregate the same two outcomes across Kalshi and
+Polymarket's read-only Gamma API (no API key on either side). Map the bar's
+sides onto one Gamma market:
+
+```json
+{
+  "polymarket": {"enabled": true, "poll_seconds": 30},
+  "probability_bar": {
+    "enabled": true,
+    "mode": "normalized_outcomes",
+    "market_ticker": "KXMLBGAME-26JUL201910LADPHI-LAD",
+    "right_market_ticker": "KXMLBGAME-26JUL201910LADPHI-PHI",
+    "polymarket": {
+      "market_id": "2922141",
+      "left_outcome": "Los Angeles Dodgers",
+      "right_outcome": "Philadelphia Phillies"
+    }
+  }
+}
+```
+
+`market_id` is the numeric Gamma market id; the outcome strings must match the
+market's `outcomes` labels exactly. The bar then shows a liquidity-weighted
+mid across both venues (equal weight when a venue does not report liquidity).
+When the venues disagree by 8 points or more, Stack-chan reads out an
+informational "venues disagree" note, and a Kalshi suspected-goal signal that
+Polymarket confirms within 90 seconds is upgraded to a dual-venue,
+high-confidence callout. If Polymarket is unreachable the bar silently falls
+back to Kalshi alone. Cross-venue pairings are proposed into
+`config/pairing_registry.json` by the market-pairing helper and only ever
+consumed after you confirm them; see
+[venue-adapter-api.zh-CN.md](venue-adapter-api.zh-CN.md) for the adapter
+contract.
+
 ## HTTP and serial transport
 
 HTTP is the full workflow and uses Python's standard library. Phone setup,

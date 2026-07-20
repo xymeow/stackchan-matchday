@@ -81,6 +81,42 @@ class MatchSetupTests(unittest.TestCase):
 
         self.assertEqual(value, "KXWCADVANCE-26JUL10ESPBEL")
 
+    def test_event_markets_narrows_winner_event_to_active_finalists(self):
+        # A tournament-winner event lists every team; once it is down to the
+        # final, only the two finalists stay active while eliminated teams
+        # settle. event_markets must resolve that to the two-way final.
+        winner_event = {
+            "event": {
+                "event_ticker": "KXMENWORLDCUP-26",
+                "title": "Men's World Cup Winner",
+                "markets": [
+                    {"ticker": "KXMENWORLDCUP-26-AR", "yes_sub_title": "Argentina", "status": "active"},
+                    {"ticker": "KXMENWORLDCUP-26-ES", "yes_sub_title": "Spain", "status": "active"},
+                    {"ticker": "KXMENWORLDCUP-26-FR", "yes_sub_title": "France", "status": "finalized"},
+                    {"ticker": "KXMENWORLDCUP-26-EN", "yes_sub_title": "England", "status": "finalized"},
+                ],
+            }
+        }
+        _event, markets = setup.event_markets(winner_event)
+        self.assertEqual(len(markets), 2)
+        self.assertEqual(
+            {setup.market_team_name(market) for market in markets},
+            {"Argentina", "Spain"},
+        )
+
+    def test_event_markets_rejects_more_than_two_live_markets(self):
+        three_active = {
+            "event": {
+                "markets": [
+                    {"ticker": "T-A", "yes_sub_title": "A", "status": "active"},
+                    {"ticker": "T-B", "yes_sub_title": "B", "status": "active"},
+                    {"ticker": "T-C", "yes_sub_title": "C", "status": "active"},
+                ]
+            }
+        }
+        with self.assertRaises(ValueError):
+            setup.event_markets(three_active)
+
     def test_scoreboard_localizes_teams_and_preserves_utc_start(self):
         matches = setup.parse_scoreboard(
             SCOREBOARD,

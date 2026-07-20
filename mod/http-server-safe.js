@@ -228,6 +228,17 @@ class HttpServerService {
     this.#active++
 
     let settled = false
+    let closed = false
+    // Exactly one close per connection. The watchdog close rejects the
+    // in-flight #handle promises, whose rejection path would otherwise close
+    // the same connection a second time — a double free/close on the socket.
+    const closeOnce = () => {
+      if (closed) return
+      closed = true
+      try {
+        connection.close()
+      } catch (_closeError) {}
+    }
     const finish = () => {
       if (settled) return
       settled = true
@@ -237,19 +248,13 @@ class HttpServerService {
     const watchdog = Timer.set(() => {
       if (settled) return
       trace('[matchday] HTTP request timed out; closing connection\n')
-      // Closing rejects the listener's pending request/response promises, so
-      // the in-flight #handle chain settles through its rejection path.
-      try {
-        connection.close()
-      } catch (_closeError) {}
+      closeOnce()
       finish()
     }, REQUEST_TIMEOUT_MS)
 
     this.#handle(connection).then(finish, (error) => {
       trace(`[matchday] HTTP response closed: ${error}\n`)
-      try {
-        connection.close()
-      } catch (_closeError) {}
+      closeOnce()
       finish()
     })
   }
