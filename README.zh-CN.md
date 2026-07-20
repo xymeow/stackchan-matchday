@@ -120,7 +120,8 @@ python3 tools/stackchan_kalshi_watch.py \
 
 示例 ticker 是占位值；从手机设置页选择真实比赛后，watcher 会校验 ESPN 与 Kalshi
 的双方匹配并原子更新配置。旧版升级前请查看
-[Matchday Mod 1.7.0 多盘口说明](docs/releases/1.7.0.md)、
+[Matchday Mod 1.8.0 队标说明](docs/releases/1.8.0.md)、
+[1.7.0 多盘口说明](docs/releases/1.7.0.md)、
 [1.6.0 说明](docs/releases/1.6.0.md)及[全部版本说明](docs/releases/)；
 设备手机页的防剧透开关需要更新 watcher 与 Mod，但无需重刷官方 host。
 

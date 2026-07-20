@@ -138,6 +138,11 @@ CRITICAL_ALERT_RETRY_LIMITS = {
     "schedule_setup": 3,
 }
 CLOSED_STATUSES = {"closed", "inactive", "settled", "finalized", "determined"}
+# Center icons shipped in the mod's asset pack (mod 1.8.0+); the device falls
+# back to the football for anything else.
+PK_BAR_ICONS = frozenset({"football", "baseball"})
+# Registry categories that render a non-default PK-bar icon.
+CATEGORY_PK_ICONS = {"mlb": "baseball"}
 STACKCHAN_DEVICE_HTTP_LOCK = threading.Lock()
 
 
@@ -185,6 +190,9 @@ class ProbabilityBarConfig:
     left_color: str = "#0055A4"
     right_flag: str = "ma"
     right_color: str = "#C1272D"
+    # Center icon on the bar; needs mod 1.8.0+, older mods ignore the extra
+    # token and keep the football.
+    icon: str = "football"
     # Optional Polymarket pairing for the same two outcomes (standalone mode,
     # PRD P2): one Gamma market whose outcome labels map onto the bar's sides.
     polymarket_market_id: str = ""
@@ -612,6 +620,7 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         left_color=str(bar_raw.get("left_color", "#0055A4")).strip(),
         right_flag=str(bar_raw.get("right_flag", "ma")).strip().lower(),
         right_color=str(bar_raw.get("right_color", "#C1272D")).strip(),
+        icon=str(bar_raw.get("icon", "football")).strip().lower(),
         polymarket_market_id=str(bar_poly_raw.get("market_id", "")).strip(),
         polymarket_left_outcome=str(bar_poly_raw.get("left_outcome", "")).strip(),
         polymarket_right_outcome=str(bar_poly_raw.get("right_outcome", "")).strip(),
@@ -997,6 +1006,7 @@ def apply_pairing_registry(
     bar.left_color = str(left_display.get("color", bar.left_color)).strip()
     bar.right_flag = str(right_display.get("flag", bar.right_flag)).strip().lower()
     bar.right_color = str(right_display.get("color", bar.right_color)).strip()
+    bar.icon = CATEGORY_PK_ICONS.get(str(entry.get("category", "")), "football")
     if polymarket_market is not None:
         bar.polymarket_market_id = str(polymarket_market.get("market_id", "")).strip()
         bar.polymarket_left_outcome = str(polymarket_map[left_outcome])
@@ -1147,6 +1157,10 @@ def validate_config(config: WatchConfig, dry_run: bool = False) -> None:
         ):
             if not flag or any(character not in "abcdefghijklmnopqrstuvwxyz-" for character in flag):
                 raise ConfigError(f"probability_bar.{name} must be a lowercase flag code")
+        if config.probability_bar.icon not in PK_BAR_ICONS:
+            raise ConfigError(
+                "probability_bar.icon must be one of: " + ", ".join(sorted(PK_BAR_ICONS))
+            )
         parse_hex_color(config.probability_bar.left_color)
         parse_hex_color(config.probability_bar.right_color)
         bar = config.probability_bar
@@ -5511,17 +5525,21 @@ def probability_bar_command(
         left_percent = midpoint
     left_percent = max(0, min(100, left_percent))
     right_percent = 100 - left_percent
-    return " ".join(
-        [
-            "pkbar",
-            bar.left_flag,
-            str(left_percent),
-            command_hex_color(bar.left_color),
-            bar.right_flag,
-            str(right_percent),
-            command_hex_color(bar.right_color),
-        ]
-    )
+    tokens = [
+        "pkbar",
+        bar.left_flag,
+        str(left_percent),
+        command_hex_color(bar.left_color),
+        bar.right_flag,
+        str(right_percent),
+        command_hex_color(bar.right_color),
+    ]
+    # The icon token needs mod 1.8.0; older mods ignore trailing tokens, and
+    # omitting the default keeps the command byte-identical to earlier
+    # releases for football watches.
+    if bar.icon and bar.icon != "football":
+        tokens.append(bar.icon)
+    return " ".join(tokens)
 
 
 def persistent_display_command(

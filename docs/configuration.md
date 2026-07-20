@@ -246,8 +246,10 @@ helper proposes cross-venue pairings into `config/pairing_registry.json`
 At startup the watcher derives the whole market setup from the confirmed
 entry: both markets (alerts and the suspected-score signal on the primary
 side, a silent mirror on the other), the `normalized_outcomes` bar with team
-colors, flags, and the Polymarket mapping, and the start time that drives
-adaptive polling. Soccer entries also wire up ESPN commentary automatically;
+colors, team logos or flags, a per-category center icon, and the Polymarket
+mapping, and the start time that drives adaptive polling. Team logos come
+from `tools/generate_stackchan_team_logo_pack.py` (all 30 MLB clubs ship
+with mod 1.8.0+); point `display.flag` at a logo code such as `mlb-lad`. Soccer entries also wire up ESPN commentary automatically;
 other categories stay market-only until their category adapter lands. The
 watcher validates the entry against both venues at startup: a missing or
 settled Kalshi market only warns, an inconsistent Polymarket market drops

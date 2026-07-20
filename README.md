@@ -95,7 +95,8 @@ python3 tools/stackchan_kalshi_watch.py \
 
 Deploy `config/espn_player_catalog.json` with the watcher checkout. For exact
 upgrade boundaries, see the bilingual
-[Matchday MOD 1.7.0 multi-venue notes](docs/releases/1.7.0.md),
+[Matchday MOD 1.8.0 team-logo notes](docs/releases/1.8.0.md),
+[1.7.0 multi-venue notes](docs/releases/1.7.0.md),
 [1.6.0 notes](docs/releases/1.6.0.md),
 [1.5.0 notes](docs/releases/1.5.0.md), and
 [1.4.0 commentary-style notes](docs/releases/1.4.0.md).
@@ -149,7 +150,7 @@ not the primary QR flow.
 | [Development](docs/development.md) | Repository map, tests, archive builds, and replay tooling |
 | [Host preparation](host/README.md) | Partition and optional CJK-font patches |
 | [Commentary styles PRD](docs/commentary-styles-prd.md) | Product rules and implementation contract |
-| [Release notes](docs/releases/1.7.0.md) | Version-specific upgrade boundaries |
+| [Release notes](docs/releases/1.8.0.md) | Version-specific upgrade boundaries |
 | [Venue adapter contract](docs/venue-adapter-api.zh-CN.md) | Normalized quotes and multi-venue aggregation rules |
 | [GitHub Wiki](https://github.com/xymeow/stackchan-matchday/wiki) | Human- and agent-friendly navigation, FAQ, and field debugging |
 

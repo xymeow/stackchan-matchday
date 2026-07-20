@@ -246,7 +246,10 @@ watchlist 指向它即可：
 
 watcher 启动时从已确认的条目派生全部盘口配置：两个市场（主队开启提醒与
 疑似得分信号，另一侧静默镜像）、`normalized_outcomes` 概率条（含队色、
-旗帜与 Polymarket 映射）、开赛时间（驱动自适应轮询）。足球品类的条目还会
+队标/旗帜、按品类选择的中央图标与 Polymarket 映射）、开赛时间（驱动
+自适应轮询）。队标包由 `tools/generate_stackchan_team_logo_pack.py`
+生成（MLB 全部 30 队已内置，mod 1.8.0+），`display.flag` 写队标代码
+（如 `mlb-lad`）即可。足球品类的条目还会
 自动接通 ESPN 逐字解说；其他品类在对应品类适配器落地前保持纯盘口陪看。
 启动时 watcher 会对照两个平台校验条目：Kalshi 市场缺失或已结算只告警；
 Polymarket 市场对不上则丢弃该映射、概率条退化单源，绝不崩溃。未确认的

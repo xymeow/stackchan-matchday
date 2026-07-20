@@ -679,7 +679,7 @@ export async function runCommand(robot, line) {
       if (parts.length < 6) {
         return {
           ok: false,
-          text: 'error usage: pkbar <left-flag> <left-%> <left-hex> <right-flag> <right-%> <right-hex>\n',
+          text: 'error usage: pkbar <left-flag> <left-%> <left-hex> <right-flag> <right-%> <right-hex> [icon]\n',
         }
       }
       const left = clamp(toNumber(parts[1], 50), 0, 100)
@@ -692,6 +692,7 @@ export async function runCommand(robot, line) {
         leftColor: parts[2],
         rightFlag: parts[3],
         rightColor: parts[5],
+        icon: parts[6],
       })
     }
 
@@ -835,9 +836,10 @@ export async function executeJsonAction(robot, payload) {
   }
   if (action === 'pkbar' || action === 'probability_bar') {
     if (payload.visible === false) return runCommand(robot, 'pkbar off')
+    const icon = payload.icon ? ` ${payload.icon}` : ''
     return runCommand(
       robot,
-      `pkbar ${payload.leftFlag ?? 'fr'} ${payload.leftPercent ?? 50} ${payload.leftColor ?? '2457a6'} ${payload.rightFlag ?? 'ma'} ${payload.rightPercent ?? 50} ${payload.rightColor ?? 'c1272d'}`,
+      `pkbar ${payload.leftFlag ?? 'fr'} ${payload.leftPercent ?? 50} ${payload.leftColor ?? '2457a6'} ${payload.rightFlag ?? 'ma'} ${payload.rightPercent ?? 50} ${payload.rightColor ?? 'c1272d'}${icon}`,
     )
   }
   if (action === 'pose') {

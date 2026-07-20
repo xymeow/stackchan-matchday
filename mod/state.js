@@ -4,7 +4,7 @@ import Net from 'net'
 import Time from 'time'
 
 export const MOD_NAME = 'stackchan_matchday'
-export const MOD_VERSION = '1.7.0'
+export const MOD_VERSION = '1.8.0'
 export const PREF_DOMAIN = 'stackchan'
 
 export const COMMENTARY_STYLES = ['casual', 'balanced', 'professional']
@@ -71,6 +71,7 @@ export const state = {
     rightFlag: '',
     rightPercent: 50,
     rightColor: '#c1272d',
+    icon: 'football',
   },
   setup: {
     visible: false,

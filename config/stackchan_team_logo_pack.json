@@ -1,0 +1,48 @@
+{
+  "width": 22,
+  "height": 18,
+  "inner_width": 20,
+  "inner_height": 16,
+  "source_template": "https://a.espncdn.com/i/teamlogos/{path}.png",
+  "teams": {
+    "mlb-ari": "mlb/500/ari",
+    "mlb-ath": "mlb/500/ath",
+    "mlb-atl": "mlb/500/atl",
+    "mlb-bal": "mlb/500/bal",
+    "mlb-bos": "mlb/500/bos",
+    "mlb-chc": "mlb/500/chc",
+    "mlb-chw": "mlb/500/chw",
+    "mlb-cin": "mlb/500/cin",
+    "mlb-cle": "mlb/500/cle",
+    "mlb-col": "mlb/500/col",
+    "mlb-det": "mlb/500/det",
+    "mlb-hou": "mlb/500/hou",
+    "mlb-kc": "mlb/500/kc",
+    "mlb-laa": "mlb/500/laa",
+    "mlb-lad": "mlb/500/lad",
+    "mlb-mia": "mlb/500/mia",
+    "mlb-mil": "mlb/500/mil",
+    "mlb-min": "mlb/500/min",
+    "mlb-nym": "mlb/500/nym",
+    "mlb-nyy": "mlb/500/nyy",
+    "mlb-phi": "mlb/500/phi",
+    "mlb-pit": "mlb/500/pit",
+    "mlb-sd": "mlb/500/sd",
+    "mlb-sea": "mlb/500/sea",
+    "mlb-sf": "mlb/500/sf",
+    "mlb-stl": "mlb/500/stl",
+    "mlb-tb": "mlb/500/tb",
+    "mlb-tex": "mlb/500/tex",
+    "mlb-tor": "mlb/500/tor",
+    "mlb-wsh": "mlb/500/wsh"
+  },
+  "icons": {
+    "baseball": {
+      "size": 24,
+      "draw": [
+        { "fill": "#f5f2ec", "stroke": "#3a3a3a", "stroke_width": 1, "commands": ["circle 12,12 12,2.5"] },
+        { "fill": "none", "stroke": "#c8102e", "stroke_width": 1.6, "commands": ["path 'M 5.2,4.2 Q 11.5,12 5.2,19.8'", "path 'M 18.8,4.2 Q 12.5,12 18.8,19.8'"] }
+      ]
+    }
+  }
+}

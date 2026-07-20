@@ -356,9 +356,14 @@ function flagSkin(code) {
   })
 }
 
-function footballSkin() {
+// Center icon per sport; anything unknown falls back to the football so an
+// older watcher (or a typo) can never crash the bar on a missing texture.
+const PK_BALL_ICONS = ['football', 'baseball']
+
+function ballSkin(icon) {
+  const name = PK_BALL_ICONS.includes(icon) ? icon : 'football'
   return new Skin({
-    texture: { path: 'football.png' },
+    texture: { path: `${name}.png` },
     x: 0,
     y: 0,
     width: PK_BALL_SIZE,
@@ -407,9 +412,10 @@ class ProbabilityBarBehavior extends Behavior {
     rightFill.x = leftWidth
     rightFill.width = rightWidth
     rightFill.skin = new Skin({ fill: this.data.rightColor })
-    // Keep the football centered on the live probability split, including at
+    // Keep the ball centered on the live probability split, including at
     // the 0% and 100% edges where half of an unclamped icon would disappear.
     ball.x = clamp(leftWidth - PK_BALL_SIZE / 2, 0, Math.max(0, width - PK_BALL_SIZE))
+    ball.skin = ballSkin(this.data.icon)
     leftFlag.skin = flagSkin(this.data.leftFlag)
     rightFlag.skin = flagSkin(this.data.rightFlag)
     const rightPercent = 100 - leftPercent
@@ -451,7 +457,7 @@ function createProbabilityBarEffect(data) {
         top: (PK_BAR_HEIGHT - PK_BALL_SIZE) / 2,
         width: PK_BALL_SIZE,
         height: PK_BALL_SIZE,
-        skin: footballSkin(),
+        skin: ballSkin(data?.icon),
       }),
       new Content(null, { name: 'pkLeftFlag', left: 0, top: 8, width: FLAG_WIDTH, height: FLAG_HEIGHT }),
       new Label(null, { name: 'pkLeftValue', left: 0, top: 0, bottom: 0, width: 30, string: '50' }),
@@ -486,11 +492,16 @@ export function setProbabilityBar(robot, data) {
       .toLowerCase(),
     rightPercent: 100 - leftPercent,
     rightColor: normalizeHexColor(data.rightColor, '#c1272d'),
+    icon: PK_BALL_ICONS.includes(String(data.icon ?? '').trim().toLowerCase())
+      ? String(data.icon).trim().toLowerCase()
+      : 'football',
   }
-  if (!/^[a-z]{2}(?:-[a-z]{3})?$/.test(next.leftFlag) || !/^[a-z]{2}(?:-[a-z]{3})?$/.test(next.rightFlag)) {
+  // Country flags (fr, gb-eng) and team-logo codes (mlb-lad) share one
+  // namespace; both are short lowercase segments joined by a dash.
+  if (!/^[a-z]{2,4}(?:-[a-z]{2,4})?$/.test(next.leftFlag) || !/^[a-z]{2,4}(?:-[a-z]{2,4})?$/.test(next.rightFlag)) {
     return {
       ok: false,
-      text: 'error pkbar flag codes must look like fr or gb-eng\n',
+      text: 'error pkbar flag codes must look like fr, gb-eng, or mlb-lad\n',
     }
   }
   if (tickerEffect !== undefined) {

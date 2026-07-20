@@ -57,7 +57,7 @@ class CommentaryStyleReleaseContractTests(unittest.TestCase):
 
     def test_mod_version_and_release_notes_stay_aligned(self):
         mod_state = (ROOT / "mod" / "state.js").read_text(encoding="utf-8")
-        release_notes = (ROOT / "docs" / "releases" / "1.6.0.md").read_text(
+        release_notes = (ROOT / "docs" / "releases" / "1.8.0.md").read_text(
             encoding="utf-8"
         )
         readmes = "\n".join(
@@ -67,9 +67,9 @@ class CommentaryStyleReleaseContractTests(unittest.TestCase):
 
         match = re.search(r"MOD_VERSION\s*=\s*'([^']+)'", mod_state)
         self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), "1.6.0")
-        self.assertIn("# Matchday MOD 1.6.0", release_notes)
-        self.assertIn("docs/releases/1.6.0.md", readmes)
+        self.assertEqual(match.group(1), "1.8.0")
+        self.assertIn("# Matchday MOD 1.8.0", release_notes)
+        self.assertIn("docs/releases/1.8.0.md", readmes)
 
 
 if __name__ == "__main__":

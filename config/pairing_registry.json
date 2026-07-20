@@ -24,11 +24,11 @@
       },
       "display": {
         "LAD": {
-          "flag": "us",
+          "flag": "mlb-lad",
           "color": "#005A9C"
         },
         "PHI": {
-          "flag": "us",
+          "flag": "mlb-phi",
           "color": "#E81828"
         }
       },
@@ -87,11 +87,11 @@
       },
       "display": {
         "LAD": {
-          "flag": "us",
+          "flag": "mlb-lad",
           "color": "#005A9C"
         },
         "PHI": {
-          "flag": "us",
+          "flag": "mlb-phi",
           "color": "#E81828"
         }
       },
@@ -150,11 +150,11 @@
       },
       "display": {
         "PIT": {
-          "flag": "us",
+          "flag": "mlb-pit",
           "color": "#FDB827"
         },
         "NYY": {
-          "flag": "us",
+          "flag": "mlb-nyy",
           "color": "#0C2340"
         }
       },

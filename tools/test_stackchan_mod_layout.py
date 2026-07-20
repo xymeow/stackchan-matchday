@@ -32,20 +32,34 @@ class ModLayoutTests(unittest.TestCase):
 
         self.assertIn("keepSetupQrOnTop(robot)", body)
 
-    def test_probability_split_uses_a_clamped_football_icon(self):
+    def test_probability_split_uses_a_clamped_sport_icon(self):
         body = UI_SOURCE.split("class ProbabilityBarBehavior", 1)[1].split(
             "export function hideProbabilityBar", 1
         )[0]
 
         self.assertIn("name: 'pkBall'", body)
-        self.assertIn("texture: { path: 'football.png' }", UI_SOURCE)
+        # Unknown icon names must clamp to the football so a stale watcher or
+        # a typo can never point the bar at a missing texture.
+        self.assertIn("PK_BALL_ICONS.includes(icon) ? icon : 'football'", UI_SOURCE)
+        self.assertIn("ball.skin = ballSkin(this.data.icon)", body)
         self.assertIn("ball.x = clamp(leftWidth - PK_BALL_SIZE / 2", body)
         self.assertNotIn("name: 'pkDivider'", body)
         self.assertIn('"./assets/ui/*"', MANIFEST_SOURCE)
-        football = (ROOT / "mod" / "assets" / "ui" / "football.png").read_bytes()
-        self.assertEqual(football[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(struct.unpack(">II", football[16:24]), (24, 24))
-        self.assertEqual(football[24:26], bytes((8, 6)))  # 8-bit RGBA
+        for icon in ("football", "baseball"):
+            self.assertIn(f"'{icon}'", UI_SOURCE)
+            image = (ROOT / "mod" / "assets" / "ui" / f"{icon}.png").read_bytes()
+            self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(struct.unpack(">II", image[16:24]), (24, 24))
+            self.assertEqual(image[24:26], bytes((8, 6)))  # 8-bit RGBA
+
+    def test_team_logo_pack_ships_probability_bar_sized_logos(self):
+        # Team logos ride the flag mechanism (flag-<code>.png), so they must
+        # match the flag footprint exactly and keep their alpha channel.
+        for code in ("mlb-lad", "mlb-phi", "mlb-nyy", "mlb-pit"):
+            image = (ROOT / "mod" / "assets" / "flags" / f"flag-{code}.png").read_bytes()
+            self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(struct.unpack(">II", image[16:24]), (22, 18))
+            self.assertEqual(image[24:26], bytes((8, 6)))  # 8-bit RGBA
 
     def test_setup_qr_uses_the_generated_texture_dimensions(self):
         body = UI_SOURCE.split("function createSetupQrEffect", 1)[1].split(
@@ -127,7 +141,7 @@ class ModLayoutTests(unittest.TestCase):
         self.assertIn("result.status ?? 400", WEB_SOURCE)
 
     def test_device_setup_page_queues_persistent_spoiler_free_changes(self):
-        self.assertIn("MOD_VERSION = '1.6.0'", STATE_SOURCE)
+        self.assertIn("MOD_VERSION = '1.8.0'", STATE_SOURCE)
         self.assertIn("spoilerFreeMode: false", STATE_SOURCE)
         self.assertIn('name="spoiler_free_mode" value="false"', WEB_SOURCE)
         self.assertIn('name="spoiler_free_mode" value="true"', WEB_SOURCE)

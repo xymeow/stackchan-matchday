@@ -25,7 +25,7 @@ class SpoilerFreeReleaseContractTests(unittest.TestCase):
         )
 
         self.assertIs(example["spoiler_free_mode"], False)
-        self.assertIn("MOD_VERSION = '1.6.0'", mod_state)
+        self.assertIn("MOD_VERSION = '1.8.0'", mod_state)
         self.assertIn("docs/releases/1.6.0.md", readmes)
 
     def test_dedicated_endpoints_exist_in_code_and_api_docs(self):

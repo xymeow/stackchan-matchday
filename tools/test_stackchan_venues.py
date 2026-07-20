@@ -302,6 +302,16 @@ class AggregatedProbabilityBarTest(unittest.TestCase):
         command = watcher.persistent_display_command(two_way_bar_config(), {}, extra)
         self.assertEqual(command, "pkbar fr 60 0055A4 ma 40 C1272D")
 
+    def test_non_football_icon_appends_token(self) -> None:
+        config = two_way_bar_config(icon="baseball")
+        command = watcher.persistent_display_command(config, live_snapshots())
+        self.assertEqual(command, "pkbar fr 76 0055A4 ma 24 C1272D baseball")
+
+    def test_unknown_icon_is_rejected_by_validation(self) -> None:
+        config = two_way_bar_config(icon="cricket")
+        with self.assertRaisesRegex(watcher.ConfigError, "probability_bar.icon"):
+            watcher.validate_config(config, dry_run=True)
+
 
 class VenueQuoteFromSnapshotTest(unittest.TestCase):
     def test_open_snapshot_maps_book_to_probability_space(self) -> None:

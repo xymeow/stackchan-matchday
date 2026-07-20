@@ -104,6 +104,7 @@ class RegistryConfigTest(unittest.TestCase):
 
         bar = config.probability_bar
         self.assertTrue(bar.enabled)
+        self.assertEqual(bar.icon, "baseball")
         self.assertEqual(bar.mode, "normalized_outcomes")
         self.assertEqual(bar.market_ticker, primary.ticker)
         self.assertEqual(bar.right_market_ticker, mirror.ticker)
@@ -122,6 +123,22 @@ class RegistryConfigTest(unittest.TestCase):
         config = self.load(self.base_config(language="en"), [registry_entry()])
         self.assertEqual(config.markets[0].label, "Dodgers to win")
         self.assertEqual(config.markets[0].goal_signal_down_team, "Phillies")
+
+    def test_soccer_category_keeps_football_icon(self) -> None:
+        entry = registry_entry(
+            id="epl-2026-08-15-ARS-MCI",
+            category="epl",
+            event_source={
+                "provider": "espn",
+                "league": "soccer/eng.1",
+                "event_id": "740001",
+            },
+        )
+        config = self.load(
+            self.base_config(active_canonical_event="epl-2026-08-15-ARS-MCI"),
+            [entry],
+        )
+        self.assertEqual(config.probability_bar.icon, "football")
 
     def test_soccer_event_source_enables_espn(self) -> None:
         entry = registry_entry(
