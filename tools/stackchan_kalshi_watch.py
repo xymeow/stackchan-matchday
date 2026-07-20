@@ -49,6 +49,17 @@ try:
         load_default_player_catalog,
         resolve_player_profile,
     )
+    from stackchan_venues import (
+        POLYMARKET_BASE_URL,
+        KalshiVenueAdapter,
+        PolymarketMarketRef,
+        PolymarketVenueAdapter,
+        VenueDivergence,
+        VenueQuote,
+        aggregate_probability,
+        max_divergence,
+        same_direction_jump,
+    )
 except ModuleNotFoundError:  # pragma: no cover - supports importlib-based tests.
     sys.path.insert(0, str(Path(__file__).parent))
     from stackchan_i18n import (
@@ -66,6 +77,17 @@ except ModuleNotFoundError:  # pragma: no cover - supports importlib-based tests
         ResolvedPlayerProfile,
         load_default_player_catalog,
         resolve_player_profile,
+    )
+    from stackchan_venues import (
+        POLYMARKET_BASE_URL,
+        KalshiVenueAdapter,
+        PolymarketMarketRef,
+        PolymarketVenueAdapter,
+        VenueDivergence,
+        VenueQuote,
+        aggregate_probability,
+        max_divergence,
+        same_direction_jump,
     )
 
 
@@ -163,6 +185,18 @@ class ProbabilityBarConfig:
     left_color: str = "#0055A4"
     right_flag: str = "ma"
     right_color: str = "#C1272D"
+    # Optional Polymarket pairing for the same two outcomes (standalone mode,
+    # PRD P2): one Gamma market whose outcome labels map onto the bar's sides.
+    polymarket_market_id: str = ""
+    polymarket_left_outcome: str = ""
+    polymarket_right_outcome: str = ""
+
+
+@dataclass
+class PolymarketConfig:
+    enabled: bool = True
+    base_url: str = POLYMARKET_BASE_URL
+    poll_seconds: int = 30
 
 
 @dataclass
@@ -250,6 +284,7 @@ class WatchConfig:
     spoiler_free_mode: bool = False
     quiet_hours: QuietHours = field(default_factory=QuietHours)
     probability_bar: ProbabilityBarConfig = field(default_factory=ProbabilityBarConfig)
+    polymarket: PolymarketConfig = field(default_factory=PolymarketConfig)
     setup_server: SetupServerConfig = field(default_factory=SetupServerConfig)
     adaptive_polling: AdaptivePollingConfig = field(default_factory=AdaptivePollingConfig)
     espn: ESPNConfig = field(default_factory=ESPNConfig)
@@ -276,6 +311,7 @@ class MarketSnapshot:
     close_time: datetime | None
     result: str = ""
     settlement_value_cents: int | None = None
+    liquidity_usd: float | None = None
 
     def bid(self, side: str) -> int | None:
         return self.yes_bid_cents if side == "yes" else self.no_bid_cents
@@ -559,6 +595,9 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
     bar_raw = raw.get("probability_bar") or {}
     if not isinstance(bar_raw, dict):
         raise ConfigError("probability_bar must be an object")
+    bar_poly_raw = bar_raw.get("polymarket") or {}
+    if not isinstance(bar_poly_raw, dict):
+        raise ConfigError("probability_bar.polymarket must be an object")
     probability_bar = ProbabilityBarConfig(
         enabled=bool(bar_raw.get("enabled", False)),
         mode=str(bar_raw.get("mode", "binary_complement")).strip().lower(),
@@ -569,6 +608,20 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         left_color=str(bar_raw.get("left_color", "#0055A4")).strip(),
         right_flag=str(bar_raw.get("right_flag", "ma")).strip().lower(),
         right_color=str(bar_raw.get("right_color", "#C1272D")).strip(),
+        polymarket_market_id=str(bar_poly_raw.get("market_id", "")).strip(),
+        polymarket_left_outcome=str(bar_poly_raw.get("left_outcome", "")).strip(),
+        polymarket_right_outcome=str(bar_poly_raw.get("right_outcome", "")).strip(),
+    )
+
+    polymarket_raw = raw.get("polymarket") or {}
+    if not isinstance(polymarket_raw, dict):
+        raise ConfigError("polymarket must be an object")
+    polymarket = PolymarketConfig(
+        enabled=bool(polymarket_raw.get("enabled", True)),
+        base_url=str(polymarket_raw.get("base_url", POLYMARKET_BASE_URL)).strip().rstrip("/"),
+        # Gamma allows ~60 req/min shared across everything we do; one quote
+        # request each 15s+ keeps plenty of headroom for discovery scans.
+        poll_seconds=max(15, int(polymarket_raw.get("poll_seconds", 30))),
     )
 
     setup_raw = raw.get("setup_server") or {}
@@ -790,6 +843,7 @@ def load_config(path: Path, language_override: str | None = None) -> WatchConfig
         ),
         quiet_hours=quiet,
         probability_bar=probability_bar,
+        polymarket=polymarket,
         setup_server=setup_server,
         adaptive_polling=adaptive_polling,
         espn=espn,
@@ -850,6 +904,16 @@ def validate_config(config: WatchConfig, dry_run: bool = False) -> None:
                 raise ConfigError(f"probability_bar.{name} must be a lowercase flag code")
         parse_hex_color(config.probability_bar.left_color)
         parse_hex_color(config.probability_bar.right_color)
+        bar = config.probability_bar
+        if bar.polymarket_market_id:
+            if bar.mode != "normalized_outcomes":
+                raise ConfigError(
+                    "probability_bar.polymarket needs normalized_outcomes mode"
+                )
+            if not bar.polymarket_left_outcome or not bar.polymarket_right_outcome:
+                raise ConfigError(
+                    "probability_bar.polymarket needs both left_outcome and right_outcome"
+                )
     for name, color in config.espn.team_colors.items():
         try:
             parse_hex_color(color)
@@ -867,6 +931,15 @@ def parse_hex_color(value: str) -> tuple[int, int, int]:
 def command_hex_color(value: str) -> str:
     parse_hex_color(value)
     return value.strip().removeprefix("#").upper()
+
+
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def dollars_to_cents(value: Any) -> int | None:
@@ -966,13 +1039,11 @@ def http_json(url: str) -> dict[str, Any]:
 
 def fetch_markets(config: WatchConfig) -> tuple[dict[str, MarketSnapshot], list[str]]:
     tickers = [market.ticker for market in config.markets]
-    query = urllib.parse.urlencode({"tickers": ",".join(tickers), "limit": str(max(100, len(tickers)))})
-    url = f"{config.kalshi_base_url}/markets?{query}"
-    payload = http_json(url)
+    adapter = KalshiVenueAdapter(config.kalshi_base_url, fetch=http_json)
     by_label = {market.ticker: market.label for market in config.markets}
     snapshots: dict[str, MarketSnapshot] = {}
 
-    for market in payload.get("markets", []):
+    for market in adapter.raw_markets(tickers):
         ticker = str(market.get("ticker", "")).upper()
         if ticker not in by_label:
             continue
@@ -991,6 +1062,9 @@ def fetch_markets(config: WatchConfig) -> tuple[dict[str, MarketSnapshot], list[
             result=str(market.get("result") or ""),
             settlement_value_cents=dollars_to_cents(
                 market.get("settlement_value_dollars")
+            ),
+            liquidity_usd=_optional_float(
+                market.get("liquidity_dollars") or market.get("liquidity")
             ),
         )
 
@@ -4180,6 +4254,96 @@ def speech_for_market_goal_signal(
     )
 
 
+VENUE_DISPLAY_NAMES = {"kalshi": "Kalshi", "polymarket": "Polymarket"}
+# A second venue jumping within this window of a goal signal counts as
+# confirmation; beyond it the moves are probably unrelated drift.
+GOAL_SIGNAL_CORROBORATION_WINDOW_SECONDS = 90.0
+VENUE_DIVERGENCE_COOLDOWN_SECONDS = 600.0
+
+
+def venue_divergence_alert(
+    config: WatchConfig,
+    divergence: VenueDivergence,
+    label: str,
+) -> Alert:
+    """Informational fact: two venues disagree on the same outcome.
+
+    Deliberately neutral wording — surfacing the gap is fine, steering the
+    user toward either side is not (PRD non-goal).
+    """
+    quote_a, quote_b = divergence.quote_a, divergence.quote_b
+    name_a = VENUE_DISPLAY_NAMES.get(quote_a.venue, quote_a.venue)
+    name_b = VENUE_DISPLAY_NAMES.get(quote_b.venue, quote_b.venue)
+    percent_a = int(round(quote_a.prob_mid * 100))
+    percent_b = int(round(quote_b.prob_mid * 100))
+    return Alert(
+        ticker=quote_a.market_id,
+        label=label,
+        kind="venue_divergence",
+        priority=60,
+        face="surprise",
+        balloon=pick(
+            config.language,
+            f"{label} | 平台分歧 | {name_a} {percent_a}% vs {name_b} {percent_b}%",
+            f"{label} | Venue split | {name_a} {percent_a}% vs {name_b} {percent_b}%",
+        ),
+        speech=pick(
+            config.language,
+            f"两个平台对{label}的看法出现分歧：{name_a}给到百分之{percent_a}，"
+            f"{name_b}给到百分之{percent_b}。市场还没统一意见。",
+            f"The venues disagree on {label}: {name_a} says {percent_a} percent, "
+            f"{name_b} says {percent_b} percent. The market hasn't made up its mind.",
+        ),
+        detail=(
+            f"venue divergence {quote_a.venue}={quote_a.prob_mid:.2f} "
+            f"{quote_b.venue}={quote_b.prob_mid:.2f} gap={divergence.gap:.2f}"
+        ),
+        spoiler_sensitive=True,
+    )
+
+
+def corroborate_goal_signal_alert(alert: Alert, config: WatchConfig) -> Alert:
+    """Upgrade a single-venue goal signal after a second venue moved with it.
+
+    One venue jumping keeps the existing "awaiting confirmation" wording;
+    two venues jumping the same way at the same time is treated as a
+    high-confidence event (PRD section 4.2, multi-source confirmation).
+    """
+    boost = pick(
+        config.language,
+        "两个平台同时跳动，这个信号可信度很高！",
+        "Both venues jumped together—this signal looks solid!",
+    )
+    speech = join_sentences(config.language, alert.speech, boost) if alert.speech else boost
+    return replace(
+        alert,
+        priority=960,
+        balloon=pick(
+            config.language,
+            f"双平台确认 | {alert.balloon}",
+            f"Dual-venue | {alert.balloon}",
+        ),
+        speech=speech,
+        detail=f"{alert.detail}; corroborated by polymarket",
+    )
+
+
+def bar_polymarket_ref(config: WatchConfig) -> PolymarketMarketRef | None:
+    """The Gamma market paired with the probability bar, if fully configured."""
+    bar = config.probability_bar
+    if not (config.polymarket.enabled and bar.enabled and bar.polymarket_market_id):
+        return None
+    if not bar.polymarket_left_outcome or not bar.polymarket_right_outcome:
+        return None
+    return PolymarketMarketRef(
+        market_id=bar.polymarket_market_id,
+        outcomes={
+            "left": bar.polymarket_left_outcome,
+            "right": bar.polymarket_right_outcome,
+        },
+    )
+
+
 def can_alert(state: MarketState, config: MarketConfig, now_ts: float) -> bool:
     return now_ts - state.last_alert_at >= config.min_seconds_between_alerts
 
@@ -5040,26 +5204,62 @@ def ticker_text(config: WatchConfig, snapshots: dict[str, MarketSnapshot]) -> st
     )
 
 
-def probability_bar_command(config: WatchConfig, snapshots: dict[str, MarketSnapshot]) -> str:
+def venue_quote_from_snapshot(snapshot: MarketSnapshot, outcome: str) -> VenueQuote:
+    """Bridge the watcher's Kalshi snapshot into the aggregation model."""
+    status_lower = snapshot.status.lower()
+    if status_lower in {"settled", "finalized", "determined"} or snapshot.result:
+        status = "settled"
+    elif status_lower in {"closed", "inactive"}:
+        status = "closed"
+    elif status_lower == "paused":
+        status = "paused"
+    else:
+        status = "open"
+    implied = snapshot.implied_probability("yes")
+    return VenueQuote(
+        venue="kalshi",
+        market_id=snapshot.ticker,
+        outcome=outcome,
+        prob_mid=implied / 100 if implied is not None else None,
+        bid=snapshot.yes_bid_cents / 100 if snapshot.yes_bid_cents is not None else None,
+        ask=snapshot.yes_ask_cents / 100 if snapshot.yes_ask_cents is not None else None,
+        volume_usd=_optional_float(snapshot.volume_24h),
+        liquidity_usd=snapshot.liquidity_usd,
+        status=status,
+        close_time=snapshot.close_time,
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+
+def probability_bar_command(
+    config: WatchConfig,
+    snapshots: dict[str, MarketSnapshot],
+    venue_quotes: dict[str, list[VenueQuote]] | None = None,
+) -> str:
     bar = config.probability_bar
     if not bar.enabled:
         return ""
+    extra = venue_quotes or {}
     snapshot = snapshots.get(bar.market_ticker)
-    if snapshot is None:
-        return ""
     if bar.mode == "normalized_outcomes":
+        left_quotes = [venue_quote_from_snapshot(snapshot, "left")] if snapshot else []
+        left_quotes.extend(extra.get("left") or [])
         right_snapshot = snapshots.get(bar.right_market_ticker)
-        left_midpoint = snapshot.implied_probability("yes")
-        right_midpoint = (
-            right_snapshot.implied_probability("yes") if right_snapshot else None
+        right_quotes = (
+            [venue_quote_from_snapshot(right_snapshot, "right")] if right_snapshot else []
         )
-        if left_midpoint is None or right_midpoint is None:
+        right_quotes.extend(extra.get("right") or [])
+        left_prob = aggregate_probability(left_quotes)
+        right_prob = aggregate_probability(right_quotes)
+        if left_prob is None or right_prob is None:
             return ""
-        total = left_midpoint + right_midpoint
+        total = left_prob + right_prob
         if total <= 0:
             return ""
-        left_percent = int(math.floor((left_midpoint * 100 / total) + 0.5))
+        left_percent = int(math.floor((left_prob * 100 / total) + 0.5))
     else:
+        if snapshot is None:
+            return ""
         midpoint = snapshot.implied_probability(bar.side)
         if midpoint is None:
             return ""
@@ -5079,8 +5279,12 @@ def probability_bar_command(config: WatchConfig, snapshots: dict[str, MarketSnap
     )
 
 
-def persistent_display_command(config: WatchConfig, snapshots: dict[str, MarketSnapshot]) -> str:
-    probability_command = probability_bar_command(config, snapshots)
+def persistent_display_command(
+    config: WatchConfig,
+    snapshots: dict[str, MarketSnapshot],
+    venue_quotes: dict[str, list[VenueQuote]] | None = None,
+) -> str:
+    probability_command = probability_bar_command(config, snapshots, venue_quotes)
     if probability_command:
         return probability_command
     if not config.ticker_enabled:
@@ -5089,8 +5293,13 @@ def persistent_display_command(config: WatchConfig, snapshots: dict[str, MarketS
     return f"ticker {message}" if message else ""
 
 
-def send_ticker(config: WatchConfig, snapshots: dict[str, MarketSnapshot], dry_run: bool) -> str:
-    command = persistent_display_command(config, snapshots)
+def send_ticker(
+    config: WatchConfig,
+    snapshots: dict[str, MarketSnapshot],
+    dry_run: bool,
+    venue_quotes: dict[str, list[VenueQuote]] | None = None,
+) -> str:
+    command = persistent_display_command(config, snapshots, venue_quotes)
     if not command:
         return ""
     send_stackchan_commands(config, [command], dry_run=dry_run)
@@ -5242,10 +5451,22 @@ def run_watch(args: argparse.Namespace) -> int:
     delivery_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="stackchan-delivery")
     delivery_future: Future[bool] | None = None
     delivery_item: QueuedAlert | None = None
+    venue_quotes_by_side: dict[str, list[VenueQuote]] = {}
+    poly_prev_left_prob: float | None = None
+    poly_last_jump_direction = 0
+    poly_last_jump_at = 0.0
+    poly_failures = 0
+    next_poly_poll_at = 0.0
+    last_divergence_alert_at = 0.0
     espn_description = f"; ESPN event={config.espn.event_id}" if config.espn.enabled else ""
+    poly_description = (
+        f"; Polymarket market={config.probability_bar.polymarket_market_id}"
+        if bar_polymarket_ref(config) is not None
+        else ""
+    )
     print(
         f"watching {len(config.markets)} Kalshi markets; Kalshi poll={config.poll_seconds}s"
-        f"; ESPN poll={config.espn.poll_seconds}s{espn_description}",
+        f"; ESPN poll={config.espn.poll_seconds}s{espn_description}{poly_description}",
         flush=True,
     )
     try:
@@ -5338,6 +5559,13 @@ def run_watch(args: argparse.Namespace) -> int:
                 pending_device_style_sync = None
                 pending_device_spoiler_sync = None
                 last_poll_tier = ""
+                venue_quotes_by_side = {}
+                poly_prev_left_prob = None
+                poly_last_jump_direction = 0
+                poly_last_jump_at = 0.0
+                poly_failures = 0
+                next_poly_poll_at = 0.0
+                last_divergence_alert_at = 0.0
                 quiet = in_quiet_hours(config.quiet_hours)
                 try:
                     send_stackchan_commands(config, ["setup hide"], dry_run=args.dry_run)
@@ -5675,6 +5903,88 @@ def run_watch(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
 
+            poly_ref = bar_polymarket_ref(config)
+            if poly_ref is not None and cycle_monotonic >= next_poly_poll_at:
+                bar_market = next(
+                    (
+                        market
+                        for market in config.markets
+                        if market.ticker == config.probability_bar.market_ticker
+                    ),
+                    None,
+                )
+                try:
+                    poly_adapter = PolymarketVenueAdapter(
+                        config.polymarket.base_url,
+                        fetch=http_json,
+                    )
+                    poly_quotes = poly_adapter.quotes([poly_ref])
+                    poly_failures = 0
+                    next_poly_poll_at = cycle_monotonic + config.polymarket.poll_seconds
+                    venue_quotes_by_side = {}
+                    for quote in poly_quotes:
+                        venue_quotes_by_side.setdefault(quote.outcome, []).append(quote)
+                    left_quote = next(
+                        (
+                            quote
+                            for quote in venue_quotes_by_side.get("left", [])
+                            if quote.prob_mid is not None
+                        ),
+                        None,
+                    )
+                    if left_quote is not None and left_quote.status == "open":
+                        if poly_prev_left_prob is not None:
+                            delta = left_quote.prob_mid - poly_prev_left_prob
+                            move_threshold = (
+                                bar_market.goal_signal_move_cents if bar_market else 5
+                            ) / 100
+                            if abs(delta) >= move_threshold:
+                                poly_last_jump_direction = 1 if delta > 0 else -1
+                                poly_last_jump_at = cycle_monotonic
+                        poly_prev_left_prob = left_quote.prob_mid
+                    bar_snapshot = snapshots.get(config.probability_bar.market_ticker)
+                    if (
+                        bar_snapshot is not None
+                        and left_quote is not None
+                        and cycle_monotonic - last_divergence_alert_at
+                        >= VENUE_DIVERGENCE_COOLDOWN_SECONDS
+                    ):
+                        divergence = max_divergence(
+                            [venue_quote_from_snapshot(bar_snapshot, "left"), left_quote]
+                        )
+                        if divergence is not None:
+                            label = bar_market.label if bar_market else bar_snapshot.label
+                            pending.append(
+                                (
+                                    venue_divergence_alert(config, divergence, label),
+                                    None,
+                                    None,
+                                    None,
+                                )
+                            )
+                            last_divergence_alert_at = cycle_monotonic
+                except (
+                    urllib.error.URLError,
+                    TimeoutError,
+                    OSError,
+                    json.JSONDecodeError,
+                    ValueError,
+                ) as error:
+                    # Degrade to single-source aggregation: the bar keeps
+                    # rendering from Kalshi alone and the device never hears
+                    # about it (PRD: log-only degradation).
+                    poly_failures += 1
+                    venue_quotes_by_side = {}
+                    retry_seconds = min(
+                        300,
+                        config.polymarket.poll_seconds * (2 ** min(4, poly_failures)),
+                    )
+                    next_poly_poll_at = cycle_monotonic + retry_seconds
+                    print(
+                        f"warning: Polymarket fetch failed ({error}); retry in {retry_seconds}s",
+                        file=sys.stderr,
+                    )
+
             if config.espn.enabled and cycle_monotonic >= next_espn_poll_at:
                 poll_started_at = cycle_monotonic
                 espn_state.last_polled_at = cycle_monotonic
@@ -5738,6 +6048,32 @@ def run_watch(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
 
+            if (
+                poly_last_jump_direction
+                and cycle_monotonic - poly_last_jump_at
+                <= GOAL_SIGNAL_CORROBORATION_WINDOW_SECONDS
+            ):
+                bar_ticker = config.probability_bar.market_ticker
+                corroborated: list[PendingAlertContext] = []
+                for item in pending:
+                    alert, item_snapshot, item_market, item_state = item
+                    if (
+                        alert.kind == "market_goal_signal"
+                        and alert.ticker == bar_ticker
+                        and item_market is not None
+                    ):
+                        # Poly tracks the bar's left outcome in yes-space;
+                        # flip the kalshi direction when the alert watched the
+                        # no side so both deltas compare in the same space.
+                        yes_direction = 1 if alert.clip_id == "odds-up" else -1
+                        if item_market.side_i_care == "no":
+                            yes_direction = -yes_direction
+                        if yes_direction == poly_last_jump_direction:
+                            alert = corroborate_goal_signal_alert(alert, config)
+                            item = (alert, item_snapshot, item_market, item_state)
+                    corroborated.append(item)
+                pending = corroborated
+
             if config.spoiler_free_mode:
                 pending = [
                     item for item in pending if not item[0].spoiler_sensitive
@@ -5745,7 +6081,11 @@ def run_watch(args: argparse.Namespace) -> int:
                 alert_queue = purge_spoiler_sensitive_alerts(alert_queue)
             alert_queue = merge_alert_queue(alert_queue, pending, cycle_monotonic)
 
-            current_display_command = persistent_display_command(config, snapshots)
+            current_display_command = persistent_display_command(
+                config,
+                snapshots,
+                venue_quotes_by_side,
+            )
             display_stale = (
                 cycle_monotonic - last_display_sent_at >= config.display_refresh_seconds
             )
@@ -5755,7 +6095,12 @@ def run_watch(args: argparse.Namespace) -> int:
                 and (current_display_command != last_display_command or display_stale)
             ):
                 try:
-                    last_display_command = send_ticker(config, snapshots, dry_run=args.dry_run)
+                    last_display_command = send_ticker(
+                        config,
+                        snapshots,
+                        dry_run=args.dry_run,
+                        venue_quotes=venue_quotes_by_side,
+                    )
                     last_display_sent_at = cycle_monotonic
                 except (urllib.error.URLError, OSError, RuntimeError) as error:
                     print(f"warning: stackchan display failed: {error}", file=sys.stderr)
